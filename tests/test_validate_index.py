@@ -301,16 +301,48 @@ def test_revocation_cannot_be_dropped_or_relisted():
     assert v.check_index(index([], version=6, revoked=["demo@1.0.0", "x@1.0.0"]), previous=prev) == []
 
 
-def test_dropped_id_must_be_revoked_so_it_cannot_return_with_other_pins():
-    prev = index([entry()], version=5)
-    assert any("was dropped" in p for p in v.check_index(index([], version=6), previous=prev))
-    dropped = index([], version=6, revoked=["demo@1.0.0"])
-    assert v.check_index(dropped, previous=prev) == []
-    # next PR: same id and version, different pin -> refused because the version is revoked
-    back = index([entry(commit="c" * 40)], version=7, revoked=["demo@1.0.0"])
-    assert v.check_index(back, previous=dropped)
-    back2 = index([entry(commit="c" * 40)], version=7)
-    assert any("revocation dropped" in p or "was revoked" in p for p in v.check_index(back2, previous=dropped))
+def test_history_pin_and_floor():
+    h = [index([entry(version="1.2.0")], version=1), index([], version=2)]  # listed, then dropped
+    same = index([entry(version="1.2.0")], version=3)
+    assert v.check_index(same, history=h) == []
+    other = index([entry(version="1.2.0", commit="c" * 40)], version=3)
+    assert any("another pin" in p for p in v.check_index(other, history=h))
+    lower = index([entry(version="1.0.0")], version=3)
+    assert any("is below 1.2.0" in p for p in v.check_index(lower, history=h))
+    assert v.check_index(index([entry(version="1.3.0")], version=3), history=h) == []
+    assert v.check_index(index([entry(id="new")], version=3), history=h) == []
+
+
+def git_commit_index(repo, doc):
+    (repo / "marketplace.json").write_text(json.dumps(doc))
+    git(repo, "add", "marketplace.json")
+    git(repo, "commit", "-qm", f"v{doc['version']}")
+
+
+def test_cli_three_step_chain_through_git(tmp_path, capsys):
+    repo = tmp_path / "market"
+    repo.mkdir()
+    git(repo, "init", "-q", "-b", "develop")
+    git_commit_index(repo, index([entry(version="1.2.0")], version=1))
+    git_commit_index(repo, index([], version=2))
+    cases = [
+        (index([entry(version="1.2.0", commit="c" * 40)], version=3), 1),  # same version, new pin
+        (index([entry(version="1.0.0")], version=3), 1),  # lower version
+        (index([entry(version="1.2.0")], version=3), 0),  # same pin
+        (index([entry(version="1.3.0")], version=3), 0),  # higher
+    ]
+    for doc, code in cases:
+        p = tmp_path / "new.json"
+        p.write_text(json.dumps(doc))
+        old = Path.cwd()
+        import os
+
+        os.chdir(repo)
+        try:
+            assert v.main([str(p), "--history-ref", "develop"]) == code, doc
+        finally:
+            os.chdir(old)
+    capsys.readouterr()
 
 
 # ----- CLI

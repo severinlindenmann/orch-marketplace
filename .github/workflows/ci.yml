@@ -10,10 +10,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           fetch-depth: 0
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5.3.0
         with:
           python-version: "3.12"
       - run: pip install -r requirements-ci.txt
@@ -30,5 +30,7 @@ jobs:
       - name: Validate marketplace.json, fetch every entry at its pinned commit, compare digests
         run: |
           args=(--fetch)
+          base="${{ github.event.pull_request.base.sha || github.event.before }}"
+          if [ -n "$base" ] && ! echo "$base" | grep -q '^0*$'; then args+=(--history-ref "$base"); fi
           [ -f "$RUNNER_TEMP/previous.json" ] && args+=(--previous "$RUNNER_TEMP/previous.json")
           python scripts/validate_index.py "${args[@]}" marketplace.json

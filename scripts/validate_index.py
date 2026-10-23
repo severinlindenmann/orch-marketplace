@@ -101,7 +101,7 @@ def canonical_url_ok(url: str) -> bool:
 
 
 def check_index(doc: Any, *, previous: Any = None, official: bool = False, now: float | None = None,
-                extra_hosts: tuple[str, ...] = ()) -> list[str]:
+                extra_hosts: tuple[str, ...] = (), history: list[Any] | None = None) -> list[str]:
     """Offline checks; returns a list of ``market.*`` problems (empty = valid)."""
     schema = json.loads(SCHEMA_PATH.read_text())
     errors = sorted(Draft202012Validator(schema).iter_errors(doc), key=lambda e: list(e.absolute_path))
@@ -140,7 +140,48 @@ def check_index(doc: Any, *, previous: Any = None, official: bool = False, now: 
             problems.append("market.index_unsigned: official index needs a signature")
     if previous is not None:
         problems += _rollback(doc, previous)
+    if history:
+        problems += _history(doc, history)
     return problems
+
+
+def _history(doc: dict[str, Any], docs: list[dict[str, Any]]) -> list[str]:
+    """Append-only history: every (id, version) ever listed keeps its pin, and an id never goes below the highest
+    version ever listed, so dropping an id and re-adding it cannot change a published pin or roll it back."""
+    pins: dict[tuple[str, str], tuple[Any, Any, Any]] = {}
+    floor: dict[str, str] = {}
+    for old in docs:
+        for e in old.get("addons", []):
+            key = (e["id"], e["version"])
+            pins.setdefault(key, (e["commit"], e["package_sha256"], e["source"]))
+            if e["id"] not in floor or _semver(e["version"]) > _semver(floor[e["id"]]):
+                floor[e["id"]] = e["version"]
+    out = []
+    for e in doc["addons"]:
+        pin = pins.get((e["id"], e["version"]))
+        if pin is not None and pin != (e["commit"], e["package_sha256"], e["source"]):
+            out.append(f"market.rollback: {e['id']} {e['version']} was published with another pin in the history")
+        if e["id"] in floor and _semver(e["version"]) < _semver(floor[e["id"]]):
+            out.append(f"market.rollback: {e['id']} {e['version']} is below {floor[e['id']]}, listed before")
+    return out
+
+
+def history_from_git(ref: str, path: str = "marketplace.json", cwd: str = ".") -> list[dict[str, Any]]:
+    """Every version of ``path`` on the first-parent history of ``ref`` (oldest first), parsed strictly."""
+    env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "GIT_CONFIG_GLOBAL": "/dev/null",
+           "GIT_CONFIG_SYSTEM": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1"}  # fmt: skip
+    shas = _git(["log", "--first-parent", "--reverse", "--format=%H", ref, "--", path], cwd, env).decode().split()
+    docs = []
+    for sha in shas:
+        try:
+            raw = _git(["show", f"{sha}:{path}"], cwd, env).decode()
+        except Invalid:
+            continue  # the commit deleted the file
+        try:
+            docs.append(strict_loads(raw))
+        except Invalid as e:
+            raise Invalid(f"market.malformed: history {sha[:12]}: {e}") from None
+    return docs
 
 
 def _rollback(doc: dict[str, Any], prev: dict[str, Any]) -> list[str]:
@@ -154,10 +195,6 @@ def _rollback(doc: dict[str, Any], prev: dict[str, Any]) -> list[str]:
     now_revoked = set(doc.get("revoked", []))
     if not prev_revoked <= now_revoked:
         out.append(f"market.rollback: revocation dropped: {', '.join(sorted(prev_revoked - now_revoked))}")
-    ids_now = {e["id"] for e in doc["addons"]}
-    for i, o in old.items():
-        if i not in ids_now and f"{i}@{o['version']}" not in now_revoked:
-            out.append(f"market.rollback: {i} was dropped; list {i}@{o['version']} in revoked (a pin cannot be re-added)")
     for e in doc["addons"]:
         o = old.get(e["id"])
         if f"{e['id']}@{e['version']}" in prev_revoked:
@@ -367,6 +404,7 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("index", nargs="?", default="marketplace.json")
     ap.add_argument("--previous", help="the index on the base branch (rollback check)")
+    ap.add_argument("--history-ref", help="git ref whose first-parent history of the index is the append-only record")
     ap.add_argument("--official", action="store_true", help="require expires_at and signature")
     ap.add_argument("--fetch", action="store_true", help="fetch every entry at its commit and compare the digest")
     ap.add_argument("--allow-host", action="append", default=[], help="extra git host (the core allow list)")
@@ -377,7 +415,12 @@ def main(argv: list[str] | None = None) -> int:
     except (Invalid, OSError) as e:
         print(f"FAIL {e}")
         return 1
-    problems = check_index(doc, previous=prev, official=a.official, extra_hosts=tuple(a.allow_host))
+    try:
+        hist = history_from_git(a.history_ref) if a.history_ref else None
+    except Invalid as e:
+        print(f"FAIL {e}")
+        return 1
+    problems = check_index(doc, previous=prev, official=a.official, extra_hosts=tuple(a.allow_host), history=hist)
     if not problems and a.fetch:
         for e in doc["addons"]:
             try:
