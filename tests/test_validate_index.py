@@ -64,6 +64,14 @@ def local_fetch(repo):
     return fetch
 
 
+def local_reach(repo):
+    return lambda url, commit, dest, env: v.ensure_reachable(str(repo), commit, dest, env, ("protocol.file.allow=always",))
+
+
+def run_entry(e, repo):
+    v.check_entry(e, local_fetch(repo), local_reach(repo))
+
+
 def src():
     return {"git": "https://github.com/acme/x", "subdir": "pkg"}
 
@@ -205,21 +213,21 @@ def test_good_listing_accepted():
 
 def test_entry_matches(tmp_path):
     repo, e = good(tmp_path)
-    v.check_entry(e, local_fetch(repo))
+    run_entry(e, repo)
 
 
 def test_digest_mismatch(tmp_path):
     repo, e = good(tmp_path)
     e["package_sha256"] = "sha256:" + "1" * 64
     with pytest.raises(v.Invalid, match="digest_mismatch"):
-        v.check_entry(e, local_fetch(repo))
+        run_entry(e, repo)
 
 
 def test_missing_commit(tmp_path):
     repo, e = good(tmp_path)
     e["commit"] = "b" * 40
     with pytest.raises(v.Invalid, match="fetch_failed"):
-        v.check_entry(e, local_fetch(repo))
+        run_entry(e, repo)
 
 
 @pytest.mark.parametrize(
@@ -230,7 +238,7 @@ def test_missing_commit(tmp_path):
 def test_manifest_mismatch(tmp_path, field, value):
     repo, e = good(tmp_path, {**MANIFEST, field: value})
     with pytest.raises(v.Invalid, match="manifest_mismatch"):
-        v.check_entry(e, local_fetch(repo))
+        run_entry(e, repo)
 
 
 def test_symlink_in_tree_refused(tmp_path):
@@ -240,7 +248,7 @@ def test_symlink_in_tree_refused(tmp_path):
     git(repo, "commit", "-qm", "link")
     e = entry(commit=git(repo, "rev-parse", "HEAD"), source=src())
     with pytest.raises(v.Invalid, match="package_invalid"):
-        v.check_entry(e, local_fetch(repo))
+        run_entry(e, repo)
 
 
 def test_attributes_cannot_change_bytes(tmp_path):
@@ -251,6 +259,46 @@ def test_attributes_cannot_change_bytes(tmp_path):
     commit = git(repo, "rev-parse", "HEAD")
     files = v.export_package(str(repo), commit, "pkg", {**v.git_env(str(tmp_path)), "GIT_DIR": str(repo / ".git")})
     assert files["a.txt"] == b"x\r\ny\n"
+
+
+def test_fork_only_commit_refused(tmp_path):
+    repo, _ = good(tmp_path)
+    git(repo, "config", "uploadpack.allowAnySHA1InWant", "true")
+    git(repo, "checkout", "-q", "-b", "fork")
+    (repo / "pkg" / "extra.py").write_text("x = 1\n")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-qm", "fork only")
+    commit = git(repo, "rev-parse", "HEAD")
+    git(repo, "checkout", "-q", "main")
+    git(repo, "branch", "-D", "fork")  # the commit now exists only as a loose object, as a fork commit would
+    files = {"orch-addon.json": json.dumps(MANIFEST), "main.py": "print('hi')\n", "extra.py": "x = 1\n"}
+    e = entry(commit=commit, source=src(), package_sha256=v.package_digest({k: x.encode() for k, x in files.items()}))
+    with pytest.raises(v.Invalid, match="commit_unreachable"):
+        run_entry(e, repo)
+
+
+def test_tagged_commit_accepted(tmp_path):
+    repo, e = good(tmp_path)
+    git(repo, "checkout", "-q", "-b", "other")
+    git(repo, "tag", "v1", e["commit"])
+    git(repo, "checkout", "-q", "main")
+    git(repo, "branch", "-D", "other")
+    run_entry(e, repo)
+
+
+def test_same_version_changed_pin_refused():
+    prev = index([entry()], version=5)
+    for k, val in (("commit", "b" * 40), ("package_sha256", "sha256:" + "2" * 64),
+                   ("source", {"git": "https://github.com/acme/other"})):
+        probs = v.check_index(index([entry(**{k: val})], version=6), previous=prev)
+        assert any(f"{k} changed" in p for p in probs), k
+
+
+def test_revocation_cannot_be_dropped_or_relisted():
+    prev = index([], version=5, revoked=["demo@1.0.0"])
+    assert any("revocation dropped" in p for p in v.check_index(index([], version=6), previous=prev))
+    assert any("was revoked" in p for p in v.check_index(index([entry()], version=6, revoked=["demo@1.0.0"]), previous=prev) + v.check_index(index([entry()], version=6, revoked=[]), previous=prev))
+    assert v.check_index(index([], version=6, revoked=["demo@1.0.0", "x@1.0.0"]), previous=prev) == []
 
 
 # ----- CLI

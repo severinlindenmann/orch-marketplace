@@ -149,10 +149,23 @@ def _rollback(doc: dict[str, Any], prev: dict[str, Any]) -> list[str]:
         out.append(f"market.rollback: version {doc['version']} is lower than {prev['version']}")
     elif doc["version"] == prev["version"] and _content(doc) != _content(prev):
         out.append("market.rollback: the index changed but its version was not raised")
-    old = {e["id"]: e["version"] for e in prev.get("addons", [])}
+    old = {e["id"]: e for e in prev.get("addons", [])}
+    prev_revoked = set(prev.get("revoked", []))
+    now_revoked = set(doc.get("revoked", []))
+    if not prev_revoked <= now_revoked:
+        out.append(f"market.rollback: revocation dropped: {', '.join(sorted(prev_revoked - now_revoked))}")
     for e in doc["addons"]:
-        if e["id"] in old and _semver(e["version"]) < _semver(old[e["id"]]):
-            out.append(f"market.rollback: {e['id']} {e['version']} is lower than {old[e['id']]}")
+        o = old.get(e["id"])
+        if f"{e['id']}@{e['version']}" in prev_revoked:
+            out.append(f"market.revoked: {e['id']}@{e['version']} was revoked and cannot be listed again")
+        if o is None:
+            continue
+        if _semver(e["version"]) < _semver(o["version"]):
+            out.append(f"market.rollback: {e['id']} {e['version']} is lower than {o['version']}")
+        elif e["version"] == o["version"]:
+            for k in ("commit", "package_sha256", "source"):
+                if e[k] != o[k]:
+                    out.append(f"market.rollback: {e['id']} {e['version']}: {k} changed without a higher version")
     return out
 
 
@@ -258,6 +271,18 @@ def fetch_commit(url: str, commit: str, repo: str, env: dict[str, str]) -> None:
         raise Invalid("market.commit_mismatch: the fetched object is not the pinned commit")
 
 
+def ensure_reachable(url: str, commit: str, repo: str, env: dict[str, str], extra: tuple[str, ...] = ()) -> None:
+    """GitHub serves a commit that exists only in a fork under the parent's URL. Require the commit to be reachable
+    from a branch or tag of the named repo: fetch its heads and tags and ask which of them contain the commit."""
+    settings = [x for kv in extra for x in ("-c", kv)]
+    _git([*FETCH_SETTINGS, *settings, "fetch", "-q", "--no-tags", "--no-recurse-submodules", url,
+          "+refs/heads/*:refs/remotes/origin/*", "+refs/tags/*:refs/tags/*"], repo, env, timeout=600)  # fmt: skip
+    refs = _git(["for-each-ref", "--contains", commit, "--count=1", "--format=%(refname)",
+                 "refs/remotes/origin", "refs/tags"], repo, env).strip()  # fmt: skip
+    if not refs:
+        raise Invalid("market.commit_unreachable: the commit is on no branch or tag of the named repo (fork commit?)")
+
+
 def export_package(repo: str, commit: str, subdir: str | None, env: dict[str, str]) -> dict[str, bytes]:
     """Read the package in memory with git plumbing (no checkout, so no attribute filter touches a byte)."""
     tree = f"{commit}:{subdir}" if subdir else f"{commit}:"
@@ -308,7 +333,7 @@ def check_manifest(entry: dict[str, Any], manifest_bytes: bytes) -> None:
         raise Invalid("market.manifest_mismatch: manifest runtime differs from the entry")
 
 
-def check_entry(entry: dict[str, Any], fetch=fetch_commit) -> None:
+def check_entry(entry: dict[str, Any], fetch=fetch_commit, reach=ensure_reachable) -> None:
     """Fetch, export, digest, manifest. Raises :class:`Invalid`. ``fetch`` is replaceable for tests."""
     home = tempfile.mkdtemp(prefix="mk-validate-")
     try:
@@ -316,6 +341,7 @@ def check_entry(entry: dict[str, Any], fetch=fetch_commit) -> None:
         repo = os.path.join(home, "repo")
         os.mkdir(repo)
         fetch(entry["source"]["git"], entry["commit"], repo, env)
+        reach(entry["source"]["git"], entry["commit"], repo, env)
         files = export_package(repo, entry["commit"], entry["source"].get("subdir"), env)
         if package_digest(files) != entry["package_sha256"]:
             raise Invalid(f"market.digest_mismatch: computed {package_digest(files)}")
