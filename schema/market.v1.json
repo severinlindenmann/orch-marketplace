@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.orch.dev/market/1",
+  "title": "Add-on marketplace index (marketplace.json, orch.market/1)",
+  "description": "docs/architecture/orch-v2-marketplace.md section 3. Strict: unknown keys are refused at every level. The schema is necessary, not sufficient: duplicate ids, sorted capabilities, the signature and every rule of sections 5 to 10 are checked by the installer, in the order of section 5.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format", "name", "version", "source", "addons"],
+  "properties": {
+    "format": {"const": "orch.market/1"},
+    "name": {"$ref": "#/$defs/name"},
+    "title": {"$ref": "#/$defs/oneLine"},
+    "version": {"type": "integer", "minimum": 1, "maximum": 9007199254740991, "description": "index version, raised by one or more at every change; a lower version than the last one seen is a rollback"},
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["git"],
+      "properties": {"git": {"$ref": "#/$defs/gitUrl"}},
+      "description": "where this index lives; must equal the URL the owner added it from"
+    },
+    "expires_at": {"type": "integer", "minimum": 1, "maximum": 9007199254740991, "description": "unix seconds; required and signed for the official index. A stale index is shown as stale, it does not block (section 3.1)"},
+    "revoked": {"type": "array", "maxItems": 500, "uniqueItems": true, "items": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,39}@(?:0|[1-9][0-9]{0,3})\\.(?:0|[1-9][0-9]{0,3})\\.(?:0|[1-9][0-9]{0,3})(?![\\s\\S])"}, "description": "id@version pairs that must not be installed or kept; covered by the index signature (section 3.1)"},
+    "signature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key", "sig"],
+      "properties": {"key": {"$ref": "#/$defs/b64uKey"}, "sig": {"$ref": "#/$defs/b64uSig"}},
+      "description": "sig = Sign(key, 'orch/market/1/index|' || cj({market, version, expires_at, entries: [[id, version, package_sha256]] by id, revoked})). Required for the official index, with the key pinned in core"
+    },
+    "addons": {
+      "type": "array",
+      "maxItems": 500,
+      "items": {"$ref": "#/$defs/entry"}
+    }
+  },
+  "$defs": {
+    "name": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,39}(?![\\s\\S])"},
+    "oneLine": {"type": "string", "minLength": 1, "maxLength": 140, "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]+(?![\\s\\S])"},
+    "gitUrl": {"type": "string", "maxLength": 200, "pattern": "^(?!.*\\.git(?![\\s\\S]))https://(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.){1,5}[a-z]{2,24}(?:/[A-Za-z0-9][A-Za-z0-9._~-]{0,99}){1,6}(?![\\s\\S])", "description": "https only; a dotted lower-case DNS name whose last label is letters (so no IP literal in any notation and no 'localhost'); no port (443 only), no credentials, query or fragment; every path segment starts with a letter or digit (so no '.' or '..'); no '.git' suffix (one repo, one URL). Lower-case paths on the case-insensitive hosts are a rule of the installer (canonical_market_url, section 4.1). Which hosts are allowed is a rule of the installer (section 5.1), not of the schema"},
+    "semver": {"type": "string", "pattern": "^(?:0|[1-9][0-9]{0,3})\\.(?:0|[1-9][0-9]{0,3})\\.(?:0|[1-9][0-9]{0,3})(?![\\s\\S])"},
+    "coreVersion": {"type": "string", "pattern": "^(?:0|[1-9][0-9]{0,3})(?:\\.(?:0|[1-9][0-9]{0,3})){0,2}(?:\\.dev(?:0|[1-9][0-9]{0,5}))?(?![\\s\\S])", "description": "same grammar as min_core in addon-api.md section 2"},
+    "b64uKey": {"type": "string", "minLength": 87, "maxLength": 87, "pattern": "^[A-Za-z0-9_-]{86}[AEIMQUYcgkosw048](?![\\s\\S])", "description": "65-byte uncompressed P-256 point, canonical unpadded base64url"},
+    "b64uSig": {"type": "string", "minLength": 86, "maxLength": 86, "pattern": "^[A-Za-z0-9_-]{85}[AQgw](?![\\s\\S])", "description": "64-byte r||s, canonical unpadded base64url"},
+    "entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "version", "source", "commit", "package_sha256", "capabilities", "min_orch"],
+      "properties": {
+        "id": {"$ref": "#/$defs/name"},
+        "version": {"$ref": "#/$defs/semver"},
+        "summary": {"$ref": "#/$defs/oneLine"},
+        "source": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["git"],
+          "properties": {
+            "git": {"$ref": "#/$defs/gitUrl"},
+            "subdir": {"type": "string", "maxLength": 200, "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}(?:/[A-Za-z0-9][A-Za-z0-9._-]{0,63}){0,5}(?![\\s\\S])", "description": "relative POSIX path; every segment follows the package file-name rule of ticket-format 8.1, so no '..', no leading dot"}
+          }
+        },
+        "commit": {"type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})(?![\\s\\S])", "description": "a full git object id; never a branch, a tag or an abbreviation"},
+        "package_sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}(?![\\s\\S])", "description": "the ticket-format 8.1 package digest of the directory at source.subdir in commit"},
+        "capabilities": {
+          "type": "array",
+          "uniqueItems": true,
+          "maxItems": 5,
+          "items": {"enum": ["git_push", "network", "pty", "serve_http", "spawn_agent"]},
+          "description": "exactly the manifest's capabilities, sorted"
+        },
+        "min_orch": {"$ref": "#/$defs/coreVersion"},
+        "api": {"type": "string", "pattern": "^(?:(?:>=|<=|==|>|<)(?:0|[1-9][0-9]{0,3})(?:\\.(?:0|[1-9][0-9]{0,3}))?(?:,(?=[<>=])|(?![\\s\\S]))){1,4}(?![\\s\\S])", "description": "display only; the manifest's api range decides"},
+        "runtime": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "lock"],
+          "properties": {
+            "kind": {"enum": ["python-requirements", "node-package-lock"]},
+            "lock": {"type": "string", "maxLength": 200, "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}(?:/[A-Za-z0-9][A-Za-z0-9._-]{0,63}){0,5}(?![\\s\\S])", "description": "path of the lockfile inside the package"}
+          }
+        },
+        "publisher": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["key", "sig"],
+          "properties": {
+            "key": {"$ref": "#/$defs/b64uKey"},
+            "sig": {"$ref": "#/$defs/b64uSig"}
+          },
+          "description": "optional; sig = Sign(key, 'orch/market/1/entry|' || cj({'entry': entry with publisher reduced to {key}, 'market': the marketplace source URL}))"
+        }
+      }
+    }
+  }
+}
