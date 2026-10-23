@@ -1,0 +1,34 @@
+name: ci
+on:
+  pull_request:
+  push:
+    branches: [develop, main]
+permissions:
+  contents: read
+jobs:
+  index:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements-ci.txt
+      - name: Validator self-tests
+        run: python -m pytest -q tests
+      - name: Previous index (rollback floor)
+        run: |
+          base="${{ github.event.pull_request.base.sha || github.event.before }}"
+          if [ -n "$base" ] && git cat-file -e "$base:marketplace.json" 2>/dev/null; then
+            git show "$base:marketplace.json" > "$RUNNER_TEMP/previous.json"
+          else
+            echo "no previous index; skipping the rollback check"
+          fi
+      - name: Validate marketplace.json, fetch every entry at its pinned commit, compare digests
+        run: |
+          args=(--fetch)
+          [ -f "$RUNNER_TEMP/previous.json" ] && args+=(--previous "$RUNNER_TEMP/previous.json")
+          python scripts/validate_index.py "${args[@]}" marketplace.json
