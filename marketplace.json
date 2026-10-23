@@ -1,0 +1,8 @@
+{
+  "format": "orch.market/1",
+  "name": "orch-marketplace",
+  "title": "The official orch add-on marketplace",
+  "version": 1,
+  "source": {"git": "https://github.com/severinlindenmann/orch-marketplace"},
+  "addons": []
+}
