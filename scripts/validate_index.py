@@ -154,6 +154,10 @@ def _rollback(doc: dict[str, Any], prev: dict[str, Any]) -> list[str]:
     now_revoked = set(doc.get("revoked", []))
     if not prev_revoked <= now_revoked:
         out.append(f"market.rollback: revocation dropped: {', '.join(sorted(prev_revoked - now_revoked))}")
+    ids_now = {e["id"] for e in doc["addons"]}
+    for i, o in old.items():
+        if i not in ids_now and f"{i}@{o['version']}" not in now_revoked:
+            out.append(f"market.rollback: {i} was dropped; list {i}@{o['version']} in revoked (a pin cannot be re-added)")
     for e in doc["addons"]:
         o = old.get(e["id"])
         if f"{e['id']}@{e['version']}" in prev_revoked:

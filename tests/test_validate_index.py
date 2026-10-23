@@ -301,6 +301,18 @@ def test_revocation_cannot_be_dropped_or_relisted():
     assert v.check_index(index([], version=6, revoked=["demo@1.0.0", "x@1.0.0"]), previous=prev) == []
 
 
+def test_dropped_id_must_be_revoked_so_it_cannot_return_with_other_pins():
+    prev = index([entry()], version=5)
+    assert any("was dropped" in p for p in v.check_index(index([], version=6), previous=prev))
+    dropped = index([], version=6, revoked=["demo@1.0.0"])
+    assert v.check_index(dropped, previous=prev) == []
+    # next PR: same id and version, different pin -> refused because the version is revoked
+    back = index([entry(commit="c" * 40)], version=7, revoked=["demo@1.0.0"])
+    assert v.check_index(back, previous=dropped)
+    back2 = index([entry(commit="c" * 40)], version=7)
+    assert any("revocation dropped" in p or "was revoked" in p for p in v.check_index(back2, previous=dropped))
+
+
 # ----- CLI
 
 
