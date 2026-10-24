@@ -92,9 +92,9 @@ jobs:
             git show "$BASE:marketplace.json" > "$RUNNER_TEMP/previous.json"
             args+=(--history-ref "$BASE" --previous "$RUNNER_TEMP/previous.json")
             # a PR into develop is also held to everything main ever published (a re-sign or release that develop lacks)
-            if git rev-parse -q --verify refs/remotes/origin/main > /dev/null; then
-              args+=(--history-ref refs/remotes/origin/main)
-            fi
+            git rev-parse -q --verify refs/remotes/origin/main > /dev/null \
+              || { echo "refs/remotes/origin/main is missing: cannot check main's published history"; exit 1; }
+            args+=(--history-ref refs/remotes/origin/main)
           else
             echo "no previous index; skipping the rollback and history checks"
           fi
