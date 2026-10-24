@@ -35,11 +35,17 @@ def choose(params: object) -> dict[str, str | None]:
         return {"model": None}
     if not isinstance(settings, dict):
         raise ValueError("settings is an object or null")
-    per = settings.get(harness)
-    value = per.get(mode) if isinstance(per, dict) else None
-    if isinstance(value, str) and value in MODELS[harness]:
-        return {"model": value}
-    return {"model": None}
+    if harness not in settings:
+        return {"model": None}
+    per = settings[harness]
+    if not isinstance(per, dict):
+        raise ValueError("settings for this harness are not an object")
+    if mode not in per or per[mode] is None:
+        return {"model": None}
+    value = per[mode]
+    if not isinstance(value, str) or value not in MODELS[harness]:
+        raise ValueError("the model set for this mode is not one orch offers")  # fail closed, never a guess
+    return {"model": value}
 
 
 def answer(line: str) -> dict[str, object]:

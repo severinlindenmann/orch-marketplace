@@ -65,11 +65,9 @@ def test_nothing_set_is_the_harness_default(settings):
     assert run({"harness": "claude-code", "mode": "work", "settings": settings})["result"] == {"model": None}
 
 
-def test_unknown_harness_mode_or_value_is_null_never_a_guess():
+def test_unknown_harness_or_mode_is_null_never_a_guess():
     assert run({"harness": "shell", "mode": "work", "settings": {"shell": {"work": "opus"}}})["result"] == {"model": None}
     assert run({"harness": "claude-code", "mode": "x", "settings": {"claude-code": {"x": "opus"}}})["result"] == {"model": None}
-    assert run({"harness": "claude-code", "mode": "work", "settings": {"claude-code": {"work": "--flag"}}})["result"] == {
-        "model": None}  # fmt: skip
 
 
 @pytest.mark.parametrize("params", [
@@ -96,3 +94,12 @@ def test_the_package_passes_the_listing_digest_and_manifest_checks_an_index_entr
     entry = {"id": "model-routing", "version": "1.0.0", "capabilities": ["choose_model"], "min_orch": "2.0.0.dev0"}
     assert v.package_digest(files).startswith("sha256:")
     v.check_manifest(entry, files["orch-addon.json"])
+
+
+@pytest.mark.parametrize("settings", [
+    {"claude-code": {"work": "gpt-5"}}, {"claude-code": {"work": "--flag"}}, {"claude-code": {"work": 1}},
+    {"claude-code": "opus"}, {"claude-code": ["opus"]},
+])
+def test_a_set_but_invalid_value_is_an_error_answer_not_null(settings):
+    out = run({"harness": "claude-code", "mode": "work", "settings": settings})
+    assert set(out) == {"jsonrpc", "id", "error"} and out["error"]["code"] == -32602
