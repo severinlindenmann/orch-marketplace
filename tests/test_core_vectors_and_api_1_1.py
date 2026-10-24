@@ -14,6 +14,7 @@ import validate_index as v  # noqa: E402
 
 CASES = [c for c in json.loads((Path(__file__).with_name("vectors_market.json")).read_text())["cases"]
          if c["check"] == "index"]  # fmt: skip
+ALL = json.loads((Path(__file__).with_name("vectors_market.json")).read_text())["cases"]
 SCHEMA = json.loads((Path(__file__).resolve().parent.parent / "schema" / "market.v1.json").read_text())
 
 # core refuses these in its installer with a more specific code; here the offline checker reports them as malformed
@@ -38,6 +39,35 @@ def test_core_index_vector(case):
             assert problems[0].startswith(code)
         elif code not in SAME_FAMILY:
             assert problems[0].startswith(code), problems
+
+
+# The vector kinds this validator answers. The rest are core-internal (install policy, lockfile parser, environment
+# tree and stamp) and have no counterpart here; a NEW kind in a re-vendored file must be handled or listed on purpose.
+CORE_ONLY = {"install", "lock", "env_paths", "env_stamp"}
+
+
+def test_every_vector_kind_is_run_here_or_core_only():
+    assert {c["check"] for c in ALL} - CORE_ONLY == {"index", "tree", "address"}
+
+
+@pytest.mark.parametrize("case", [c for c in ALL if c["check"] == "tree"], ids=lambda c: c["name"])
+def test_core_tree_vector(case):
+    listing = [(e["mode"], e["path"], e["size"]) for e in case["args"]["entries"]]
+    if "ok" in case["expect"]:
+        v.judge_listing(listing)
+    else:
+        with pytest.raises(v.Invalid, match=case["expect"]["refuse"]):
+            v.judge_listing(listing)
+
+
+@pytest.mark.parametrize("case", [c for c in ALL if c["check"] == "address"], ids=lambda c: c["name"])
+def test_core_address_vector(case):
+    ip = case["args"]["ip"]
+    if "ok" in case["expect"]:
+        assert v.check_address(ip)
+    else:
+        with pytest.raises(v.Invalid, match=case["expect"]["refuse"]):
+            v.check_address(ip)
 
 
 def test_schema_lists_the_seven_capabilities_sorted_like_core():

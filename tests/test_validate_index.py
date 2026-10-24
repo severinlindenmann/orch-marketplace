@@ -69,7 +69,7 @@ def local_reach(repo):
 
 
 def run_entry(e, repo):
-    v.check_entry(e, local_fetch(repo), local_reach(repo))
+    v.check_entry(e, local_fetch(repo), local_reach(repo), pin=lambda url: {})
 
 
 def src():
