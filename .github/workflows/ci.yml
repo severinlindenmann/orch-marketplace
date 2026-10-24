@@ -91,6 +91,10 @@ jobs:
           if [ -n "$BASE" ] && ! echo "$BASE" | grep -q '^0*$' && git cat-file -e "$BASE:marketplace.json" 2>/dev/null; then
             git show "$BASE:marketplace.json" > "$RUNNER_TEMP/previous.json"
             args+=(--history-ref "$BASE" --previous "$RUNNER_TEMP/previous.json")
+            # a PR into develop is also held to everything main ever published (a re-sign or release that develop lacks)
+            if git rev-parse -q --verify refs/remotes/origin/main > /dev/null; then
+              args+=(--history-ref refs/remotes/origin/main)
+            fi
           else
             echo "no previous index; skipping the rollback and history checks"
           fi
