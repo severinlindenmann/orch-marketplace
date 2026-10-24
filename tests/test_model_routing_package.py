@@ -60,7 +60,7 @@ def test_every_mode_maps_to_its_setting():
             assert out == {"jsonrpc": "2.0", "id": 1, "result": {"model": model}}
 
 
-@pytest.mark.parametrize("settings", [None, {}, {"claude-code": {}}, {"codex": {"work": "o3"}}, {"claude-code": None}])
+@pytest.mark.parametrize("settings", [None, {}, {"claude-code": {}}, {"codex": {"work": "o3"}}, {"claude-code": {"work": None}}])
 def test_nothing_set_is_the_harness_default(settings):
     assert run({"harness": "claude-code", "mode": "work", "settings": settings})["result"] == {"model": None}
 
@@ -98,7 +98,7 @@ def test_the_package_passes_the_listing_digest_and_manifest_checks_an_index_entr
 
 @pytest.mark.parametrize("settings", [
     {"claude-code": {"work": "gpt-5"}}, {"claude-code": {"work": "--flag"}}, {"claude-code": {"work": 1}},
-    {"claude-code": "opus"}, {"claude-code": ["opus"]},
+    {"claude-code": "opus"}, {"claude-code": ["opus"]}, {"claude-code": None},
 ])
 def test_a_set_but_invalid_value_is_an_error_answer_not_null(settings):
     out = run({"harness": "claude-code", "mode": "work", "settings": settings})
