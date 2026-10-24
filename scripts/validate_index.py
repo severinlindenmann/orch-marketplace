@@ -683,7 +683,43 @@ def check_api_1_1(m: dict[str, Any]) -> None:
         check_settings_schema(st["schema"])
 
 
-def check_manifest(entry: dict[str, Any], manifest_bytes: bytes) -> None:
+def _lockfile_module():
+    """Core's own lockfile parser (vendored byte-identical under ``scripts/vendor``, with a stub for the one name it
+    takes from core's ``orch.market``). Loaded on first use so that ``-I`` (no script directory on the path) works."""
+    vendor = str(Path(__file__).resolve().parent / "vendor")
+    if vendor not in sys.path:
+        sys.path.insert(0, vendor)
+    from orch.addons import lockfile  # noqa: PLC0415
+
+    return lockfile
+
+
+def check_lock(runtime: dict[str, Any], files: dict[str, bytes]) -> None:
+    """The lockfile a package declares (``runtime.lock``) is refused exactly as core refuses it, so that a bad entry is
+    caught before signing: ``market.lock_missing`` when the file is not in the package, otherwise core's own parser
+    (bounded: the lockfile byte and row caps of core apply; offline, pure). Raises :class:`Invalid`."""
+    lockfile = _lockfile_module()
+    data = files.get(runtime["lock"])
+    if data is None:
+        raise Invalid("market.lock_missing: the lockfile named by runtime.lock is not in the package")
+    try:
+        lockfile.check(runtime["kind"], data)
+    except lockfile.MarketError as e:  # only core's own verdict; an environment or code fault must crash the gate
+        raise Invalid(f"{e.code}: the lockfile is refused") from None
+
+
+# orch-core plugins/orch-core/src/orch/addons/manifest.py:133 (RUNTIME_COMMANDS) and :141-143 (_check_runtime)
+RUNTIME_COMMANDS = {"python-requirements": "{python}", "node-package-lock": "node"}
+
+
+def check_runtime_command(m: dict[str, Any]) -> None:
+    """Core's ``_check_runtime`` rule: the entry command starts with the interpreter the lock was made for."""
+    want = RUNTIME_COMMANDS[m["runtime"]["kind"]]
+    if m["entry"]["cmd"][0] != want:
+        raise Invalid(f"market.manifest_invalid: a {m['runtime']['kind']} add-on starts with {want!r}")
+
+
+def check_manifest(entry: dict[str, Any], manifest_bytes: bytes, files: dict[str, bytes] | None = None) -> None:
     try:
         m = strict_loads(manifest_bytes.decode())
     except (Invalid, UnicodeDecodeError) as e:
@@ -705,6 +741,9 @@ def check_manifest(entry: dict[str, Any], manifest_bytes: bytes) -> None:
         raise Invalid("market.manifest_mismatch: manifest runtime differs from the entry")
     check_manifest_schema(m)
     check_api_1_1(m)
+    if "runtime" in m:  # the schema has made it {kind, lock}
+        check_runtime_command(m)
+        check_lock(m["runtime"], files or {})
 
 
 MIN_GIT = (2, 37)  # http.curloptResolve (an older git ignores the key, which would switch the address pin off)
@@ -731,7 +770,7 @@ def check_entry(entry: dict[str, Any], fetch=fetch_commit, reach=ensure_reachabl
         files = export_package(repo, entry["commit"], entry["source"].get("subdir"), env)
         if package_digest(files) != entry["package_sha256"]:
             raise Invalid(f"market.digest_mismatch: computed {package_digest(files)}")
-        check_manifest(entry, files[MANIFEST_FILE])
+        check_manifest(entry, files[MANIFEST_FILE], files)
     finally:
         _rmtree(home)
 

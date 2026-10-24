@@ -355,3 +355,21 @@ def test_cli_valid_and_invalid(tmp_path, capsys):
     p.write_text(json.dumps(index(version=0)))
     assert v.main([str(p)]) == 1
     assert "FAIL" in capsys.readouterr().out
+
+
+def test_check_entry_checks_the_lock_of_a_package_that_declares_one(tmp_path):
+    lock = "requests==2.32.3 --hash=sha256:" + "a" * 64 + "\n"
+    m = {**MANIFEST, "entry": {"cmd": ["{python}", "main.py"]}, "api": ">=1.1,<2",
+         "runtime": {"kind": "python-requirements", "lock": "req.lock"}}  # fmt: skip
+    for lock_text, ok in ((lock, True), ("requests>=2\n", False)):
+        d = tmp_path / str(ok)
+        d.mkdir()
+        files = {"orch-addon.json": json.dumps(m), "main.py": "print()\n", "req.lock": lock_text}
+        repo, commit = make_repo(d, files)
+        digest = v.package_digest({k: x.encode() for k, x in files.items()})
+        e = entry(commit=commit, package_sha256=digest, source=src(), runtime=m["runtime"])
+        if ok:
+            run_entry(e, repo)
+        else:
+            with pytest.raises(v.Invalid, match="market.lock_invalid"):
+                run_entry(e, repo)
