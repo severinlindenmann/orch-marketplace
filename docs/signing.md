@@ -115,10 +115,20 @@ gh pr create --repo severinlindenmann/orch-marketplace --base develop --head mai
 
 (the re-sign PR's description carries this command). Merge it before any index PR on develop is promoted.
 
-## Rotation
+## Rotation (current -> next)
 
-`next.key` is the second pinned key. Rotation (entries re-keyed, hosts accepting a known-key change) is not built:
-`sign-index` refuses to overwrite an entry `publisher` made by a different key, and core's install TOFU would raise
-`market.publisher_key_changed`. It is tracked as a core issue; do not rotate before it is done.
+Core accepts a re-keyed official entry when the new key is one this core release pins (orch-core #1191): the review shows
+the new key as a first use, the update as widened, and the host's remembered key moves to it. A key core does not pin is
+refused (`market.official_unsigned`), so a retired key is never taken back. Every other marketplace keeps strict TOFU.
+
+1. A core release with #1191 is out (hosts on older cores would refuse the re-keyed entries).
+2. The owner replaces the Environment secret `ORCH_MARKET_INDEX_KEY` with `next.key`, then signs once with
+   `sign-index --rekey --expect-pub <current>,<next>`: every entry publisher and the index signature move to the next
+   key, version + 1. `--rekey` re-signs only entries whose old key is one of `--expect-pub`; an entry made by any other
+   key is refused, as without `--rekey`. (The workflow has no `--rekey` input yet; add it, or run it once by hand with the
+   key on stdin, before rotating.) Merge the re-sign PR and the main -> develop back-merge as usual.
+3. Only after step 2 is on main: the owner makes a new next key (`gen-index-keys`, owner custody), and a core release pins
+   `(next, new next)`; `ORCH_MARKET_INDEX_PUBS` becomes `<next>,<new next>`. A core that pins the new pair before step 2
+   is on main would refuse the official index (`market.index_unsigned`).
 
 Last reviewed: 24 Oct 2026 (V3-D39).
