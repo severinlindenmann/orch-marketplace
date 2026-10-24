@@ -15,29 +15,30 @@ file = the 32-byte scalar as one 43-character line and nothing else (no label, n
 
 ## Who holds the keys (custody)
 
-The next key is pinned in core. Whoever holds either private key can sign an index every host accepts. So **no agent ever
-sees, creates or keeps a private key**:
+Whoever holds either private key can sign an index every host accepts (the next key is pinned in core as well). Two ways to
+hold them; **owner decision V3-D39 chose the first**, the second is the stricter alternative.
 
-* **The owner runs `gen-index-keys` himself**, on a machine or macOS user account where no agent runs. A key file in a
-  directory like `~/orch-dev/.tkeys-*` on the dev machine is readable by every agent process of that user, whatever its mode,
-  and deleting it does not wipe an APFS/SSD block; a machine without agents makes both moot.
-* `current.key` goes into the GitHub Environment secret (owner's `gh`). `next.key` goes into the owner's own vault or the
-  encrypted offline backup. Never the agents' Proton Pass vault ("Agents"), never a repo, a message or a log.
-* Agents receive **only the two public halves** (printed by the script): for the repository variable and for the orch-core
-  pin PR. Nothing else leaves the owner's machine.
+| | Default (V3-D39) | Stricter alternative ("owner-only") |
+|---|---|---|
+| Who runs `gen-index-keys` | the advisor session, in a fresh `mktemp -d ~/orch-dev/.tkeys-XXXX` | the owner, on a machine or macOS user where no agent runs |
+| `current.key` | piped by the advisor into the Environment secret, never read or printed | the owner pipes it into the secret |
+| `next.key` | **Proton Pass, vault "Agents"** (stdin template, never argv) | the owner's own vault or the encrypted offline backup |
+| Both key files | deleted right after, once both copies are verified (`rmtmp.sh`) | `rm -r` by the owner |
+| Exposure | **Owner-accepted trade-off:** while the files exist they are readable by every agent process of that user, and afterwards every agent session that can log into the "Agents" vault can read `next.key`. `next.key` is pinned in core, so such an agent could sign an index that every host accepts. APFS/SSD deletion does not wipe the blocks. | no agent ever sees a private key; agents get only the public halves |
 
-The current key has no backup by design: if it is lost, switch to the next key (rotation, below). The signing job has the
-current key in the Environment and nothing else does.
+Rules in both: never `cat` or print a key file, never a repo, message or log; only the two public halves go to the agents'
+pin PR. The current key has no backup by design: if it is lost, switch to the next key (rotation, below).
 
-## Operator steps (once, the owner)
+## Operator steps (once)
 
-Needs `cryptography` (`pip install cryptography==44.0.0` in a venv is enough) and `gh` logged in as the owner. Nothing here
-prints a private key; do not `cat` the key files.
+Needs `cryptography` (the orch-core venv has it). Default path (the advisor, with the owner account); the owner-only
+variant is the same commands run by the owner (replace `rmtmp.sh` by `rm -r`, step 3 by his own vault).
 
 ```
-git clone https://github.com/severinlindenmann/orch-marketplace && cd orch-marketplace   # develop after PR B
-D=$(mktemp -d)                                    # mode 0700; the only place the private keys exist
-python3 scripts/gen-index-keys --out "$D"
+cd ~/orch-dev/orch-marketplace          # a checkout that has scripts/gen-index-keys
+D=$(mktemp -d ~/orch-dev/.tkeys-XXXX)   # mode 0700, short path; the only place the private keys exist
+PY=~/orch-dev/orch-core/plugins/orch-core/.venv/bin/python
+$PY scripts/gen-index-keys --out "$D"
 #   prints the OFFICIAL_KEYS block (public halves only, current first) and writes $D/current.key and $D/next.key (0600)
 
 # 1. The Environment limited to main, and the public halves as a REPOSITORY variable (public keys, comma separated, current
@@ -51,20 +52,24 @@ gh variable set ORCH_MARKET_INDEX_PUBS --repo severinlindenmann/orch-marketplace
 # 2. The current private key becomes the Environment secret, straight from the file
 gh secret set ORCH_MARKET_INDEX_KEY --env index-signing --repo severinlindenmann/orch-marketplace < "$D/current.key"
 
-# 3. Copy $D/next.key into your own vault or the encrypted offline backup.
+# 3. Default: the next key goes to Proton Pass (vault Agents; see the proton-pass skill). It reaches the CLI by a stdin
+#    template, never as an argument:
+source <(~/orch-dev/scripts/pass-login.sh)
+python3 -c 'import json,sys; print(json.dumps({"title":"orch market index key (next)","password":open(sys.argv[1]).read(),"urls":[]}))' "$D/next.key" \
+  | PROTON_PASS_AGENT_REASON="store next official index key (M#3, V3-D39)" pass-cli item create login --vault-name Agents --from-template -
+#    Owner-only variant: copy $D/next.key into the owner's own vault or the encrypted offline backup instead.
 
 # 4. Verify every stored copy BEFORE deleting anything. The secret exists (its value cannot be read back):
 gh secret list --env index-signing --repo severinlindenmann/orch-marketplace      # shows ORCH_MARKET_INDEX_KEY
-#    The stored next key is the pinned one: this prints a public half; it must equal the second printed public key
-python3 scripts/gen-index-keys --public-of < "$D/next.key"
-#    ...and once more from the stored copy itself (pipe it from the vault: ... | python3 scripts/gen-index-keys --public-of).
+#    The stored next key is the pinned one: both commands print a public half, and both must equal the second pinned key
+$PY scripts/gen-index-keys --public-of < "$D/next.key"
+pass-cli item view --vault-name Agents --item-title "orch market index key (next)" --field password | $PY scripts/gen-index-keys --public-of
 #    A failed copy would otherwise lose the only one.
 
-# 5. Delete the private-key files
-rm -r "$D"
+# 5. Paste the printed public halves into the orch-core pin PR (constants.py), mark it ready, merge it.
 
-# 6. Give the agents the two public halves (the printed OFFICIAL_KEYS block): they paste them into the orch-core pin PR
-#    (m3-pin-keys, constants.py). The agents may also do step 1 for you; it contains no secret.
+# 6. Delete the private-key files (only mktemp paths under ~/orch-dev/.t*-XXXX are accepted)
+~/orch-dev/scripts/rmtmp.sh "$D"
 ```
 
 Then, on the owner account: allow GitHub Actions to create pull requests (Settings > Actions > General) and run the workflow
@@ -115,3 +120,5 @@ gh pr create --repo severinlindenmann/orch-marketplace --base develop --head mai
 `next.key` is the second pinned key. Rotation (entries re-keyed, hosts accepting a known-key change) is not built:
 `sign-index` refuses to overwrite an entry `publisher` made by a different key, and core's install TOFU would raise
 `market.publisher_key_changed`. It is tracked as a core issue; do not rotate before it is done.
+
+Last reviewed: 24 Oct 2026 (V3-D39).
