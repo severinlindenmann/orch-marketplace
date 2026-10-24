@@ -4,8 +4,8 @@
     gen-index-keys --out DIR
     gen-index-keys --public-of < FILE
 
-DIR must already exist, be yours, be mode 0700 and hold no key yet: create it with `mktemp -d ~/orch-dev/.tkeys-XXXX`.
-It writes DIR/current.key and DIR/next.key (mode 0600, one line each, the private scalar and nothing else, so each file
+DIR must already exist, be yours, be mode 0700 and hold no key yet: create it with `mktemp -d`.
+Run it as the owner on a machine where no agent runs (docs/signing.md). It writes DIR/current.key and DIR/next.key (mode 0600, one line each, the private scalar and nothing else, so each file
 can be piped as it is into `gh secret set ... < file` or a password manager) and prints ONLY the public halves, in the
 form core pins them (OFFICIAL_KEYS in orch/market/constants.py). A private key is never printed.
 Move the keys to the secret store, then delete DIR (see docs/signing.md).
@@ -35,7 +35,7 @@ def check_dir(d: Path) -> None:
     try:
         st = os.lstat(d)
     except OSError:
-        die(f"{d} does not exist; create it first: mktemp -d ~/orch-dev/.tkeys-XXXX")
+        die(f"{d} does not exist; create it first: mktemp -d")
     if not stat.S_ISDIR(st.st_mode):
         die(f"{d} is not a directory (a symlink is refused)")
     if st.st_uid != os.getuid():
@@ -60,10 +60,10 @@ def main(argv: list[str] | None = None) -> int:
     if a.public_of == (a.out is not None):
         die("give exactly one of --out DIR or --public-of")
     if a.public_of:
-        try:
-            print(ms.public_text(ms.load_private(sys.stdin.read())))
-        except ms.SignError:
-            die("not a key file written by gen-index-keys")  # never echo the input
+        try:  # bytes in, one fixed message out: no exception text can carry a byte of the input
+            print(ms.public_text(ms.load_private(sys.stdin.buffer.read().decode("ascii"))))
+        except Exception:  # noqa: BLE001
+            die("not a key file written by gen-index-keys")
         return 0
     out = Path(a.out)
     check_dir(out)

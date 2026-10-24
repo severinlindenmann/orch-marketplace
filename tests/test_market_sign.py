@@ -190,6 +190,16 @@ def test_public_of_prints_only_the_public_half_of_a_key_on_stdin(tmp_path):
     assert run("gen-index-keys", "--public-of", "--out", str(d)).returncode == 1
 
 
+def test_public_of_with_non_utf8_input_fails_with_a_fixed_message(tmp_path):
+    """L5: a raw key or DER piped from a vault must not leak a byte through an exception text."""
+    raw = bytes([0xFF, 0xFE, 0x80, 0xC3, 0x28]) + os.urandom(27)
+    r = subprocess.run([sys.executable, str(SCRIPTS / "gen-index-keys"), "--public-of"], input=raw, capture_output=True)
+    assert r.returncode == 1
+    err = r.stderr.decode("ascii")  # pure ASCII: the fixed message only
+    assert err.strip() == "gen-index-keys: not a key file written by gen-index-keys"
+    assert r.stdout == b"" and b"Traceback" not in r.stderr and b"0xff" not in r.stderr.lower()
+
+
 def test_gen_index_keys_never_overwrites(tmp_path):
     d = mkdir(tmp_path)
     assert run("gen-index-keys", "--out", str(d)).returncode == 0
