@@ -36,14 +36,22 @@ by hand.
 
 ## CI
 
-`.github/workflows/ci.yml` runs `scripts/validate_index.py --fetch` on every pull request and push:
+`.github/workflows/ci.yml` is the gate (check `index`). It runs on `pull_request_target`, so the workflow file, the
+validator and the schema all come from the **base** branch; the pull request is only read as data
+(`git show <head>:marketplace.json`). A PR that changes the gate (`scripts/`, `schema/`, `.github/`, `requirements-*.txt`)
+and `marketplace.json` together is refused by `scripts/check_scope.py`: land the gate change first, the index change in a
+later PR. The gate runs `scripts/validate_index.py --fetch`:
 
 1. strict JSON, schema `schema/market.v1.json`, unique ids, sorted capabilities, canonical lower-case URLs, git host
    rule, rollback against the base branch's index;
 2. for every entry: fetch the pinned commit (isolated git environment, no checkout, plumbing only), judge the tree
    by the package rules, recompute `package_sha256` and compare, check the manifest agrees with the entry.
 
-Run it locally: `pip install -r requirements-ci.txt && python -m pytest -q tests && python scripts/validate_index.py --fetch`.
+`.github/workflows/tests.yml` runs the repository's own tests on the PR's code (`pull_request`, read-only token). It is a
+quality check, not the gate. Run both locally: `pip install -r requirements-ci.txt && python -m pytest -q tests && python scripts/validate_index.py --fetch`.
+
+Owner settings: require the check `index` on `develop` and `main`, enforce code-owner review (CODEOWNERS covers the gate
+files), and turn on "require branches to be up to date".
 
 ## Changing the index
 

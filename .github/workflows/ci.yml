@@ -1,6 +1,15 @@
 name: ci
+# THE GATE (M#2). The check "index" validates marketplace.json with the validator and schema of the BASE branch, never
+# the ones in the pull request:
+#   * pull_request_target runs this workflow file from the base branch, so a PR cannot edit its own gate;
+#   * the PR's head is only fetched as data (`git show`), no PR file is executed here;
+#   * a PR that touches the validator, schema, workflows or CI requirements together with marketplace.json is refused
+#     (scripts/check_scope.py): change the gate in one PR, the index in the next.
+# push (develop, main): the merged code validates itself. There is deliberately NO workflow_dispatch (or any other
+# manual) trigger: a run started from another branch would use that branch's copy of this file.
 on:
-  pull_request:
+  pull_request_target:
+    branches: [develop, main]
   push:
     branches: [develop, main]
 permissions:
@@ -10,27 +19,48 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Check out the trusted tree (base branch tip), never the pull request
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.base.sha || github.sha }}
           fetch-depth: 0
       - uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5.3.0
         with:
           python-version: "3.12"
       - run: pip install -r requirements-ci.txt
-      - name: Validator self-tests
-        run: python -m pytest -q tests
-      - name: Previous index (rollback floor)
+      - name: Work out base and head
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
         run: |
-          base="${{ github.event.pull_request.base.sha || github.event.before }}"
-          if [ -n "$base" ] && git cat-file -e "$base:marketplace.json" 2>/dev/null; then
-            git show "$base:marketplace.json" > "$RUNNER_TEMP/previous.json"
-          else
-            echo "no previous index; skipping the rollback check"
-          fi
-      - name: Validate marketplace.json, fetch every entry at its pinned commit, compare digests
+          set -eu
+          case "$EVENT" in
+            pull_request_target)
+              git fetch --no-tags origin "refs/pull/${PR_NUMBER}/head"
+              head=$(git rev-parse FETCH_HEAD)
+              [ "$head" = "$PR_HEAD" ] || { echo "the PR head moved while the check started; rerun"; exit 1; }
+              base="$PR_BASE"; scope="--base $base --head $head" ;;
+            *)
+              head=$(git rev-parse HEAD); base="$PUSH_BEFORE"; scope="" ;;
+          esac
+          echo "BASE=$base" >> "$GITHUB_ENV"
+          echo "HEAD_SHA=$head" >> "$GITHUB_ENV"
+          echo "SCOPE_ARGS=$scope" >> "$GITHUB_ENV"
+      - name: Refuse a PR that changes the gate and the index together
+        if: env.SCOPE_ARGS != ''
+        run: python -I scripts/check_scope.py $SCOPE_ARGS
+      - name: Validate the index of the head with the trusted validator
         run: |
+          set -eu
+          git show "$HEAD_SHA:marketplace.json" > "$RUNNER_TEMP/head-index.json"
           args=(--fetch)
-          base="${{ github.event.pull_request.base.sha || github.event.before }}"
-          if [ -n "$base" ] && ! echo "$base" | grep -q '^0*$'; then args+=(--history-ref "$base"); fi
-          [ -f "$RUNNER_TEMP/previous.json" ] && args+=(--previous "$RUNNER_TEMP/previous.json")
-          python scripts/validate_index.py "${args[@]}" marketplace.json
+          if [ -n "$BASE" ] && ! echo "$BASE" | grep -q '^0*$' && git cat-file -e "$BASE:marketplace.json" 2>/dev/null; then
+            git show "$BASE:marketplace.json" > "$RUNNER_TEMP/previous.json"
+            args+=(--history-ref "$BASE" --previous "$RUNNER_TEMP/previous.json")
+          else
+            echo "no previous index; skipping the rollback and history checks"
+          fi
+          python -I scripts/validate_index.py "${args[@]}" "$RUNNER_TEMP/head-index.json"
