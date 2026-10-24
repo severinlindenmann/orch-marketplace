@@ -31,13 +31,20 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from jsonschema import Draft202012Validator
+from referencing import Registry, Resource
+from referencing.jsonschema import DRAFT202012
 
 SCHEMA_PATH = Path(__file__).resolve().parent.parent / "schema" / "market.v1.json"
+# core's manifest schema and the shared definitions it references, vendored byte-identical (orch/schema/schemas/)
+MANIFEST_SCHEMA_PATH = SCHEMA_PATH.with_name("addon-manifest.json")
+COMMON_SCHEMA_PATH = SCHEMA_PATH.with_name("common.json")
+ADDON_API = (1, 1)  # the add-on API of the core this copy of the schemas comes from; a package must run on it
 DEFAULT_GIT_HOSTS = ("github.com", "gitlab.com")
 CASE_INSENSITIVE_HOSTS = ("github.com", "gitlab.com", "bitbucket.org")
 
 # Package rules, ticket-format 8.1 (mirror of orch.addons.package).
 MANIFEST_FILE = "orch-addon.json"
+ADDON_API_1_1_CAPS = ("choose_model", "credential")  # addon-api 1.1; the index lists them like any other capability
 MAX_DEPTH, MAX_FILES = 6, 256
 MAX_FILE_BYTES, MAX_TOTAL_BYTES, MAX_MANIFEST_BYTES = 4 << 20, 16 << 20, 64 << 10
 REFUSED_SUFFIXES = (".pyc", ".pyo", ".so", ".dylib", ".dll", ".pyd")
@@ -352,6 +359,186 @@ def export_package(repo: str, commit: str, subdir: str | None, env: dict[str, st
     return files
 
 
+# ----------------------------------------------------------------------------------------------- addon-api 1.1
+# Mirror of orch-core (addon-api.md section 8): ``orch.schema._check_manifest_api_1_1``, ``orch.addons.settings_schema``
+# and the ``credential`` -> ``network`` rule of the manifest schema. Stdlib only; keep in step with core.
+
+_SETTINGS_MAX_DEPTH = 4
+_SETTINGS_MAX_ENTRIES = 64
+_SETTINGS_KEY = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}(?![\s\S])")
+_SETTINGS_TYPES = ("object", "string", "integer", "boolean", "array")
+_SETTINGS_COMMON = {"type", "title"}
+_SETTINGS_KEYS = {
+    "object": _SETTINGS_COMMON | {"properties", "additionalProperties", "required", "maxProperties"},
+    "string": _SETTINGS_COMMON | {"enum", "maxLength"},
+    "integer": _SETTINGS_COMMON | {"minimum", "maximum"},
+    "boolean": _SETTINGS_COMMON,
+    "array": _SETTINGS_COMMON | {"items", "maxItems"},
+}
+_SAFE_INT = 2**53 - 1
+_BIDI = frozenset([0x061C, 0x200E, 0x200F, *range(0x202A, 0x202F), *range(0x2066, 0x206A)])
+_EXTRA_INVISIBLE = frozenset(
+    [0x034F, 0x115F, 0x1160, 0x2028, 0x2029, 0x2800, 0x3164, 0xFFA0, *range(0x17B4, 0x17B6),
+     *range(0x180B, 0x1810), *range(0xFE00, 0xFE10), *range(0xE0100, 0xE01F0)]
+)  # fmt: skip
+_API_CLAUSE = re.compile(r"(>=|<=|==|>|<)([0-9]{1,4})(?:\.([0-9]{1,4}))?(?![\s\S])")
+_LEGACY_API = ">=1.0,<2"
+
+
+def _int_ok(v: Any, lo: int, hi: int) -> bool:
+    return isinstance(v, int) and not isinstance(v, bool) and lo <= v <= hi
+
+
+def _suspicious(s: str) -> bool:
+    """Mirror of core's ``suspicious()``: bidi controls, invisible and look-alike characters, every Cf, private use,
+    and a leading mark."""
+    for i, c in enumerate(s):
+        cp = ord(c)
+        cat = unicodedata.category(c)
+        if (cp in _BIDI or cp in _EXTRA_INVISIBLE or cat in ("Cf", "Co") or (i == 0 and cat in ("Mn", "Mc", "Me"))):
+            return True
+    return False
+
+
+def _text_ok(s: str) -> bool:
+    """Printable, not only blank, nothing ``_suspicious``, no control, surrogate, unassigned or line-separator
+    character, no space but U+0020. Core's Unicode tables are pinned; this uses the CI interpreter's, so a character
+    newer than CI's tables is refused here (over-refusal only, never the dangerous direction)."""
+    if not s.strip() or _suspicious(s):
+        return False
+    return all(unicodedata.category(c) not in ("Cc", "Cs", "Cn", "Zl", "Zp") and (c == " " or not c.isspace())
+               for c in s)  # fmt: skip
+
+
+def check_settings_schema(node: Any) -> None:
+    """Raise :class:`Invalid` unless ``node`` is a schema of the closed subset with an object at the root."""
+    if not isinstance(node, dict) or node.get("type") != "object":
+        raise Invalid("market.manifest_invalid: the settings schema is an object")
+    _settings_node(node, "settings.schema", 1)
+
+
+def _settings_node(node: Any, path: str, depth: int) -> None:
+    def bad(where: str, why: str) -> Invalid:
+        return Invalid(f"market.manifest_invalid: {where}: {why}")
+
+    if not isinstance(node, dict):
+        raise bad(path, "a schema is an object")
+    if depth > _SETTINGS_MAX_DEPTH:
+        raise bad(path, f"nested deeper than {_SETTINGS_MAX_DEPTH}")
+    typ = node.get("type")
+    if typ not in _SETTINGS_TYPES:
+        raise bad(f"{path}.type", "type is one of object, string, integer, boolean, array")
+    for k in node:
+        if k not in _SETTINGS_KEYS[typ]:
+            raise bad(f"{path}.{k}", f"{k!r} is not allowed here")
+    t = node.get("title")
+    if t is not None and not (isinstance(t, str) and 1 <= len(t) <= 60 and _text_ok(t)):
+        raise bad(f"{path}.title", "title is 1 to 60 printable characters")
+    if typ == "object":
+        if node.get("additionalProperties") is not False:
+            raise bad(f"{path}.additionalProperties", "an object sets additionalProperties to false")
+        props = node.get("properties", {})
+        if not isinstance(props, dict) or len(props) > _SETTINGS_MAX_ENTRIES:
+            raise bad(f"{path}.properties", f"properties is an object of at most {_SETTINGS_MAX_ENTRIES}")
+        for k, sub in props.items():
+            if not _SETTINGS_KEY.fullmatch(k):
+                raise bad(f"{path}.properties.{k}", "a property name is lower-case letters, digits . _ -")
+            _settings_node(sub, f"{path}.properties.{k}", depth + 1)
+        req = node.get("required", [])
+        if (not isinstance(req, list) or not all(isinstance(r, str) and r in props for r in req)
+                or len(set(req)) != len(req)):  # fmt: skip
+            raise bad(f"{path}.required", "required lists distinct names of properties")
+        if "maxProperties" in node and not _int_ok(node["maxProperties"], 0, _SETTINGS_MAX_ENTRIES):
+            raise bad(f"{path}.maxProperties", f"maxProperties is 0 to {_SETTINGS_MAX_ENTRIES}")
+    elif typ == "string":
+        if "enum" not in node and "maxLength" not in node:
+            raise bad(path, "a string sets enum or maxLength")
+        if "maxLength" in node and not _int_ok(node["maxLength"], 1, 200):
+            raise bad(f"{path}.maxLength", "maxLength is 1 to 200")
+        if "enum" in node:
+            e = node["enum"]
+            if (not isinstance(e, list) or not 1 <= len(e) <= _SETTINGS_MAX_ENTRIES
+                    or not all(isinstance(v, str) and 1 <= len(v) <= 64 and _text_ok(v) for v in e)
+                    or len(set(e)) != len(e)):  # fmt: skip
+                raise bad(f"{path}.enum", "enum is 1 to 64 distinct printable strings of at most 64 characters")
+    elif typ == "integer":
+        if "minimum" not in node or "maximum" not in node:
+            raise bad(path, "an integer sets minimum and maximum")
+        for k in ("minimum", "maximum"):
+            if not _int_ok(node[k], -_SAFE_INT, _SAFE_INT):
+                raise bad(f"{path}.{k}", f"{k} is a whole number")
+        if node["minimum"] > node["maximum"]:
+            raise bad(f"{path}.minimum", "minimum is greater than maximum")
+    elif typ == "array":
+        if "items" not in node:
+            raise bad(f"{path}.items", "an array names its items")
+        _settings_node(node["items"], f"{path}.items", depth + 1)
+        if not _int_ok(node.get("maxItems"), 0, _SETTINGS_MAX_ENTRIES):
+            raise bad(f"{path}.maxItems", f"an array sets maxItems, 0 to {_SETTINGS_MAX_ENTRIES}")
+
+
+def api_range_includes(api: tuple[int, int], rng: str) -> bool | None:
+    """True/False, or ``None`` when ``rng`` is not a valid range (fail closed). Mirror of core ``_api_in_range``."""
+    clauses = rng.split(",")
+    if not 1 <= len(clauses) <= 4:
+        return None
+    ok = True
+    for c in clauses:
+        m = _API_CLAUSE.fullmatch(c)
+        if m is None:
+            return None
+        bound = (int(m[2]), int(m[3] or 0))
+        ok = ok and {">=": api >= bound, "<=": api <= bound, "==": api == bound, ">": api > bound, "<": api < bound}[m[1]]
+    return ok
+
+
+def _manifest_validator() -> Draft202012Validator:
+    reg: Registry = Registry()
+    for path in (COMMON_SCHEMA_PATH, MANIFEST_SCHEMA_PATH):
+        doc = json.loads(path.read_text())
+        reg = reg.with_resource(doc["$id"], Resource.from_contents(doc, default_specification=DRAFT202012))
+    manifest = json.loads(MANIFEST_SCHEMA_PATH.read_text())
+    return Draft202012Validator({"$ref": manifest["$id"]}, registry=reg)
+
+
+def check_manifest_schema(m: dict[str, Any]) -> None:
+    """Core's own manifest schema (orch.addon/3), then the checks core's ``validate()`` adds beyond it that matter
+    here: no invisible character in the title, and the api range must include the add-on API this core speaks."""
+    errs = sorted(_manifest_validator().iter_errors(m), key=lambda e: list(e.absolute_path))
+    if errs:
+        e = errs[0]
+        raise Invalid(f"market.manifest_invalid: {'/'.join(map(str, e.absolute_path)) or '<root>'}: {e.message[:200]}")
+    if _suspicious(m["title"]):
+        raise Invalid("market.manifest_invalid: title contains an invisible character")
+    if api_range_includes(ADDON_API, m.get("api", _LEGACY_API)) is not True:
+        raise Invalid(f"market.manifest_invalid: api {m.get('api')!r} does not include add-on API 1.1")
+
+
+def check_api_1_1(m: dict[str, Any]) -> None:
+    """The add-on API 1.1 rules of a manifest: the new features need an api range that excludes 1.0, ``{python}`` is
+    the whole of ``cmd[0]`` only, ``credential`` needs ``network``, ``settings.schema`` is in the closed subset."""
+    caps = m.get("capabilities", [])
+    cmd = m.get("entry", {}).get("cmd") if isinstance(m.get("entry"), dict) else None
+    if not isinstance(cmd, list) or not cmd or not all(isinstance(a, str) for a in cmd):
+        raise Invalid("market.manifest_invalid: entry.cmd is a list of strings")
+    uses = ([c for c in caps if c in ADDON_API_1_1_CAPS] + (["settings"] if "settings" in m else [])
+            + (["{python}"] if cmd[0] == "{python}" else []))  # fmt: skip
+    api = m.get("api", _LEGACY_API)
+    if uses and (not isinstance(api, str) or api_range_includes((1, 0), api) is not False):
+        raise Invalid(f"market.manifest_invalid: {uses[0]} needs add-on API 1.1: set api to a range that excludes 1.0")
+    for i, arg in enumerate(cmd):
+        if "{python}" in arg and (i != 0 or arg != "{python}"):
+            raise Invalid(f"market.manifest_invalid: entry.cmd[{i}]: {{python}} is only allowed as the whole of cmd[0]")
+    if "credential" in caps and "network" not in caps:
+        raise Invalid("market.manifest_invalid: credential needs network")
+    if "settings" in m:
+        st = m["settings"]
+        if (not isinstance(st, dict) or set(st) != {"title", "schema"} or not isinstance(st["title"], str)
+                or not 1 <= len(st["title"]) <= 60 or not _text_ok(st["title"])):  # fmt: skip
+            raise Invalid("market.manifest_invalid: settings is {title (1 to 60 printable characters), schema}")
+        check_settings_schema(st["schema"])
+
+
 def check_manifest(entry: dict[str, Any], manifest_bytes: bytes) -> None:
     try:
         m = strict_loads(manifest_bytes.decode())
@@ -372,6 +559,8 @@ def check_manifest(entry: dict[str, Any], manifest_bytes: bytes) -> None:
             raise Invalid(f"market.manifest_mismatch: manifest {k} differs from the entry")
     if m.get("runtime") != entry.get("runtime"):
         raise Invalid("market.manifest_mismatch: manifest runtime differs from the entry")
+    check_manifest_schema(m)
+    check_api_1_1(m)
 
 
 def check_entry(entry: dict[str, Any], fetch=fetch_commit, reach=ensure_reachable) -> None:

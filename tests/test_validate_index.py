@@ -16,7 +16,7 @@ import validate_index as v  # noqa: E402
 ROOT = Path(__file__).resolve().parent.parent
 MANIFEST = {
     "schema": "orch.addon/3", "name": "demo", "version": "1.0.0", "title": "Demo",
-    "entry": {"cmd": ["demo"]}, "capabilities": ["network"], "min_core": "2.0.0",
+    "entry": {"cmd": ["demo"]}, "capabilities": ["network"], "min_core": "2.0.0", "api": ">=1.0,<2",
 }  # fmt: skip
 URL = "https://github.com/severinlindenmann/orch-marketplace"
 GIT_ENV = {"GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": "/dev/null", "PATH": "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin"}

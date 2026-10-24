@@ -63,8 +63,8 @@
         "capabilities": {
           "type": "array",
           "uniqueItems": true,
-          "maxItems": 5,
-          "items": {"enum": ["git_push", "network", "pty", "serve_http", "spawn_agent"]},
+          "maxItems": 7,
+          "items": {"enum": ["choose_model", "credential", "git_push", "network", "pty", "serve_http", "spawn_agent"]},
           "description": "exactly the manifest's capabilities, sorted"
         },
         "min_orch": {"$ref": "#/$defs/coreVersion"},
