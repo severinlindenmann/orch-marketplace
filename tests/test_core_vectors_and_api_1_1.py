@@ -172,3 +172,41 @@ def test_check_manifest_runs_the_1_1_rules():
     v.check_manifest(e, json.dumps(good).encode())
     with pytest.raises(v.Invalid, match="needs add-on API 1.1"):
         v.check_manifest(e, json.dumps(manifest(api=">=1.0,<2")).encode())
+
+
+# ---- D8-1: manifests are validated against core's vendored manifest schema in --fetch (parity probes of the Opus review)
+
+
+def _routing_entry():
+    return {**_entry(["choose_model"]), "id": "model-routing"}
+
+
+def _bad(**kw):
+    m = manifest(**kw)
+    for k in [k for k, val in kw.items() if val is _DROP]:
+        del m[k]
+    return m
+
+
+_DROP = object()
+
+
+@pytest.mark.parametrize("m", [
+    _bad(unknown_key=1),
+    _bad(title=_DROP),
+    _bad(entry={"cmd": ["{python}", "{pkg}/main.py"], "extra": 1}),
+    _bad(entry={"cmd": [""]}),
+    _bad(title="Model‮routing"),
+    _bad(version="1"),
+    _bad(api=">=1.2,<2"),
+    _bad(api=">=2.0"),
+], ids=["unknown_top_key", "missing_title", "extra_entry_key", "empty_cmd0", "bidi_title", "version_1", "api_1_2", "api_2"])
+def test_manifest_that_core_refuses_is_refused_here_too(m):
+    with pytest.raises(v.Invalid):
+        v.check_manifest(_routing_entry(), json.dumps(m).encode())
+
+
+def test_the_manifest_schema_files_are_vendored():
+    for p in (v.MANIFEST_SCHEMA_PATH, v.COMMON_SCHEMA_PATH):
+        doc = json.loads(p.read_text())
+        assert doc["$id"].startswith("https://schemas.orch.dev/v2/")

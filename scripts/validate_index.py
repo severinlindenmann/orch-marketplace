@@ -31,8 +31,14 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from jsonschema import Draft202012Validator
+from referencing import Registry, Resource
+from referencing.jsonschema import DRAFT202012
 
 SCHEMA_PATH = Path(__file__).resolve().parent.parent / "schema" / "market.v1.json"
+# core's manifest schema and the shared definitions it references, vendored byte-identical (orch/schema/schemas/)
+MANIFEST_SCHEMA_PATH = SCHEMA_PATH.with_name("addon-manifest.json")
+COMMON_SCHEMA_PATH = SCHEMA_PATH.with_name("common.json")
+ADDON_API = (1, 1)  # the add-on API of the core this copy of the schemas comes from; a package must run on it
 DEFAULT_GIT_HOSTS = ("github.com", "gitlab.com")
 CASE_INSENSITIVE_HOSTS = ("github.com", "gitlab.com", "bitbucket.org")
 
@@ -383,22 +389,25 @@ def _int_ok(v: Any, lo: int, hi: int) -> bool:
     return isinstance(v, int) and not isinstance(v, bool) and lo <= v <= hi
 
 
-def _text_ok(s: str) -> bool:
-    """Printable, not only blank, nothing invisible, bidi, control, private-use or unassigned, no space but U+0020, no
-    leading mark. Stricter or equal to core's ``suspicious`` plus categories (core's Unicode tables are pinned; this
-    uses the CI interpreter's, so a newly assigned character may differ at the margin and the installer decides)."""
-    if not s.strip():
-        return False
+def _suspicious(s: str) -> bool:
+    """Mirror of core's ``suspicious()``: bidi controls, invisible and look-alike characters, every Cf, private use,
+    and a leading mark."""
     for i, c in enumerate(s):
         cp = ord(c)
         cat = unicodedata.category(c)
-        if cp in _BIDI or cp in _EXTRA_INVISIBLE or cat in ("Cc", "Cf", "Cs", "Co", "Cn", "Zl", "Zp"):
-            return False
-        if c != " " and c.isspace():
-            return False
-        if i == 0 and cat in ("Mn", "Mc", "Me"):
-            return False
-    return True
+        if (cp in _BIDI or cp in _EXTRA_INVISIBLE or cat in ("Cf", "Co") or (i == 0 and cat in ("Mn", "Mc", "Me"))):
+            return True
+    return False
+
+
+def _text_ok(s: str) -> bool:
+    """Printable, not only blank, nothing ``_suspicious``, no control, surrogate, unassigned or line-separator
+    character, no space but U+0020. Core's Unicode tables are pinned; this uses the CI interpreter's, so a character
+    newer than CI's tables is refused here (over-refusal only, never the dangerous direction)."""
+    if not s.strip() or _suspicious(s):
+        return False
+    return all(unicodedata.category(c) not in ("Cc", "Cs", "Cn", "Zl", "Zp") and (c == " " or not c.isspace())
+               for c in s)  # fmt: skip
 
 
 def check_settings_schema(node: Any) -> None:
@@ -483,6 +492,28 @@ def api_range_includes(api: tuple[int, int], rng: str) -> bool | None:
     return ok
 
 
+def _manifest_validator() -> Draft202012Validator:
+    reg: Registry = Registry()
+    for path in (COMMON_SCHEMA_PATH, MANIFEST_SCHEMA_PATH):
+        doc = json.loads(path.read_text())
+        reg = reg.with_resource(doc["$id"], Resource.from_contents(doc, default_specification=DRAFT202012))
+    manifest = json.loads(MANIFEST_SCHEMA_PATH.read_text())
+    return Draft202012Validator({"$ref": manifest["$id"]}, registry=reg)
+
+
+def check_manifest_schema(m: dict[str, Any]) -> None:
+    """Core's own manifest schema (orch.addon/3), then the checks core's ``validate()`` adds beyond it that matter
+    here: no invisible character in the title, and the api range must include the add-on API this core speaks."""
+    errs = sorted(_manifest_validator().iter_errors(m), key=lambda e: list(e.absolute_path))
+    if errs:
+        e = errs[0]
+        raise Invalid(f"market.manifest_invalid: {'/'.join(map(str, e.absolute_path)) or '<root>'}: {e.message[:200]}")
+    if _suspicious(m["title"]):
+        raise Invalid("market.manifest_invalid: title contains an invisible character")
+    if api_range_includes(ADDON_API, m.get("api", _LEGACY_API)) is not True:
+        raise Invalid(f"market.manifest_invalid: api {m.get('api')!r} does not include add-on API 1.1")
+
+
 def check_api_1_1(m: dict[str, Any]) -> None:
     """The add-on API 1.1 rules of a manifest: the new features need an api range that excludes 1.0, ``{python}`` is
     the whole of ``cmd[0]`` only, ``credential`` needs ``network``, ``settings.schema`` is in the closed subset."""
@@ -528,6 +559,7 @@ def check_manifest(entry: dict[str, Any], manifest_bytes: bytes) -> None:
             raise Invalid(f"market.manifest_mismatch: manifest {k} differs from the entry")
     if m.get("runtime") != entry.get("runtime"):
         raise Invalid("market.manifest_mismatch: manifest runtime differs from the entry")
+    check_manifest_schema(m)
     check_api_1_1(m)
 
 
