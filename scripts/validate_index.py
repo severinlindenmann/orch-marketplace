@@ -704,8 +704,19 @@ def check_lock(runtime: dict[str, Any], files: dict[str, bytes]) -> None:
         raise Invalid("market.lock_missing: the lockfile named by runtime.lock is not in the package")
     try:
         lockfile.check(runtime["kind"], data)
-    except Exception as e:  # MarketError from the vendored copy; anything else is a bug and also refuses
-        raise Invalid(f"{getattr(e, 'code', 'market.lock_invalid')}: the lockfile is refused") from None
+    except lockfile.MarketError as e:  # only core's own verdict; an environment or code fault must crash the gate
+        raise Invalid(f"{e.code}: the lockfile is refused") from None
+
+
+# orch-core plugins/orch-core/src/orch/addons/manifest.py:133 (RUNTIME_COMMANDS) and :141-143 (_check_runtime)
+RUNTIME_COMMANDS = {"python-requirements": "{python}", "node-package-lock": "node"}
+
+
+def check_runtime_command(m: dict[str, Any]) -> None:
+    """Core's ``_check_runtime`` rule: the entry command starts with the interpreter the lock was made for."""
+    want = RUNTIME_COMMANDS[m["runtime"]["kind"]]
+    if m["entry"]["cmd"][0] != want:
+        raise Invalid(f"market.manifest_invalid: a {m['runtime']['kind']} add-on starts with {want!r}")
 
 
 def check_manifest(entry: dict[str, Any], manifest_bytes: bytes, files: dict[str, bytes] | None = None) -> None:
@@ -731,6 +742,7 @@ def check_manifest(entry: dict[str, Any], manifest_bytes: bytes, files: dict[str
     check_manifest_schema(m)
     check_api_1_1(m)
     if "runtime" in m:  # the schema has made it {kind, lock}
+        check_runtime_command(m)
         check_lock(m["runtime"], files or {})
 
 
