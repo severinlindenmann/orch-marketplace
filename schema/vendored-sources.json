@@ -1,0 +1,24 @@
+{
+ "comment": "Where each vendored copy comes from. The local file must be byte-identical to the file at that commit of the source repository; scripts/check_vendored.py and tests/test_vendored_sources.py check it. To update: copy the new file, set commit and sha256 here in the same pull request.",
+ "source_repo": "severinlindenmann/orch-core",
+ "files": [
+  {
+   "local": "schema/addon-manifest.json",
+   "source": "plugins/orch-core/src/orch/schema/schemas/addon-manifest.json",
+   "commit": "6c1d88a48bde197364a8c641d2247cf1b2479d14",
+   "sha256": "e32a8096932f19bacc4f65b08b541e77dcba9e568f86488a3aeb96632f83841f"
+  },
+  {
+   "local": "schema/common.json",
+   "source": "plugins/orch-core/src/orch/schema/schemas/common.json",
+   "commit": "6c1d88a48bde197364a8c641d2247cf1b2479d14",
+   "sha256": "82dd6776a53dc222dcebcbb571c8127263115661c343f4307d1856c9be4a9b85"
+  },
+  {
+   "local": "tests/vectors_market.json",
+   "source": "plugins/orch-core/tests/addons/vectors_market.json",
+   "commit": "5f930bd982b158117be60985cdbf93fc5d9a7cc0",
+   "sha256": "fa59aa292ac603377ef8a9158b2c1fd9f480e6c5d891f47ed02b1255d8d218e9"
+  }
+ ]
+}
