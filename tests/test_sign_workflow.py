@@ -108,3 +108,14 @@ def test_no_other_workflow_names_the_signing_environment_or_uses_privileged_trig
         if wf.name != "sign-index.yml":
             assert "index-signing" not in text and "ORCH_MARKET_INDEX_KEY" not in text, wf.name
     assert "pull_request_target" not in WF and "workflow_run" not in WF and "workflow_call" not in WF
+
+
+def test_rekey_is_a_manual_input_that_runs_rekey_without_if_needed():
+    """orch-core #1191: the rotation runs in the Environment, from a manual run only; every other run is unchanged."""
+    assert re.search(r"^  workflow_dispatch:\n    inputs:\n      rekey:\n", WF, re.M)
+    assert re.search(r"^        type: boolean\n        default: false$", WF, re.M)
+    step = WF.split("- name: Sign (only this step sees the key)")[1].split("- name:")[0]
+    assert "REKEY: ${{ github.event_name == 'workflow_dispatch' && inputs.rekey == true }}" in step
+    calls = re.findall(r"python -I scripts/sign-index ([^\n]*)", step)
+    assert calls == ['--rekey --expect-pub "$ORCH_MARKET_INDEX_PUBS"', '--if-needed --expect-pub "$ORCH_MARKET_INDEX_PUBS"']
+    assert WF.count("--rekey") == 1  # only the signing step, only behind the input

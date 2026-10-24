@@ -4,6 +4,7 @@ name: sign-index
 #     ORCH_MARKET_INDEX_KEY. The public halves are the REPOSITORY variable ORCH_MARKET_INDEX_PUBS (not an Environment one:
 #     the gate, ci.yml, reads it too, to verify re-sign PRs);
 #   * triggers: a change of marketplace.json on main, a daily check (re-signs when fewer than 10 days remain), manual;
+#     a manual run with `rekey: true` is the key rotation (orch-core #1191): `sign-index --rekey`, no `--if-needed`;
 #   * the result is NEVER pushed to main: it goes to a new branch and a pull request, and the owner merges it.
 # Why a PR and not a bot commit to main: the key can then only ever produce a file the owner has looked at, main keeps
 # its protection (no bypass actor), and the diff shows exactly expires_at / version / publisher / signature.
@@ -15,6 +16,11 @@ on:
   schedule:
     - cron: "17 5 * * *"
   workflow_dispatch:
+    inputs:
+      rekey:
+        description: "Key rotation: re-sign every entry made by the other pinned key with this secret's key"
+        type: boolean
+        default: false
 concurrency:
   group: sign-index
   cancel-in-progress: false
@@ -52,10 +58,15 @@ jobs:
         env:
           ORCH_MARKET_INDEX_KEY: ${{ secrets.ORCH_MARKET_INDEX_KEY }}
           ORCH_MARKET_INDEX_PUBS: ${{ vars.ORCH_MARKET_INDEX_PUBS }}
+          REKEY: ${{ github.event_name == 'workflow_dispatch' && inputs.rekey == true }}
         run: |
           set -eu
           [ -n "$ORCH_MARKET_INDEX_PUBS" ] || { echo "ORCH_MARKET_INDEX_PUBS (the pinned public keys) is not set"; exit 1; }
-          python -I scripts/sign-index --if-needed --expect-pub "$ORCH_MARKET_INDEX_PUBS"
+          if [ "$REKEY" = "true" ]; then
+            python -I scripts/sign-index --rekey --expect-pub "$ORCH_MARKET_INDEX_PUBS"
+          else
+            python -I scripts/sign-index --if-needed --expect-pub "$ORCH_MARKET_INDEX_PUBS"
+          fi
       - name: Verify the result with main's validator and the pinned public keys
         env:
           ORCH_MARKET_INDEX_PUBS: ${{ vars.ORCH_MARKET_INDEX_PUBS }}
