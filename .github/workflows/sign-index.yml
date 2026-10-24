@@ -1,7 +1,8 @@
 name: sign-index
 # Signs marketplace.json with the official index key (M#3, spec 3.1) and proposes the result as a pull request.
-#   * runs on main only, in the Environment `index-signing` (deployment branch: main; the secret ORCH_MARKET_INDEX_KEY and
-#     the variable ORCH_MARKET_INDEX_PUBS live there, nowhere else);
+#   * runs on main only, in the Environment `index-signing` (deployment branch: main), which holds the secret
+#     ORCH_MARKET_INDEX_KEY. The public halves are the REPOSITORY variable ORCH_MARKET_INDEX_PUBS (not an Environment one:
+#     the gate, ci.yml, reads it too, to verify re-sign PRs);
 #   * triggers: a change of marketplace.json on main, a daily check (re-signs when fewer than 10 days remain), manual;
 #   * the result is NEVER pushed to main: it goes to a new branch and a pull request, and the owner merges it.
 # Why a PR and not a bot commit to main: the key can then only ever produce a file the owner has looked at, main keeps
