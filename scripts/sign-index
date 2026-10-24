@@ -11,9 +11,9 @@ What it does, in this order:
   1. the index must be valid on its own (schema and offline rules of scripts/validate_index.py);
   2. every entry gets ``publisher`` = {official key, signature over the entry and this market's URL} (kept as it is if it
      already verifies, so a refresh does not touch the entries);
-  3. ``expires_at`` = now + --days; if the file already carries a signature that verifies with this key, ``version`` is
-     raised by one: a host that has seen this version holds its signed payload, and the same version with a different
-     payload (here: a new expires_at) is a rollback for it (core check_floor);
+  3. ``expires_at`` = now + --days and ``version`` = input version + 1, ALWAYS when a file is written: a host that has
+     seen a version holds its signed payload, and the same version with a different payload (a new expires_at, a new key,
+     a first signature) is market.rollback for it (core check_floor), and the gate's rollback check refuses it too;
   4. the index signature is made and the result is verified with core's rules before the file is replaced, atomically.
 Nothing but expires_at, signature, version (as in 3) and entry publishers changes; this is asserted before writing.
 
@@ -87,7 +87,7 @@ def needs_signing(doc: dict[str, Any], pubs: tuple[str, ...], now: int, below_da
 def sign_doc(doc: dict[str, Any], key, *, now: int, days: int) -> dict[str, Any]:
     pub = ms.public_text(key)
     new = copy.deepcopy(doc)
-    bump = 1 if ms.verify_index(doc, (pub,)) else 0
+    bump = 1  # one invariant: every file written has input version + 1 (first signing, content change, key switch, refresh)
     market = new["source"]["git"]
     for e in new["addons"]:
         p = e.get("publisher")

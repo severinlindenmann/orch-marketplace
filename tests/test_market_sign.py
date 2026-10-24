@@ -177,6 +177,19 @@ def test_gen_index_keys_refuses_unsafe_directories(tmp_path):
     assert list(real.iterdir()) == []
 
 
+def test_public_of_prints_only_the_public_half_of_a_key_on_stdin(tmp_path):
+    d = mkdir(tmp_path)
+    r = run("gen-index-keys", "--out", str(d))
+    pub = re.search(r'"([A-Za-z0-9_-]{87})",\s+# next', r.stdout).group(1)
+    secret = (d / "next.key").read_text()
+    r = run("gen-index-keys", "--public-of", stdin=secret)
+    assert r.returncode == 0 and r.stdout.strip() == pub and secret not in r.stdout + r.stderr
+    r = run("gen-index-keys", "--public-of", stdin="not-a-key-1234")
+    assert r.returncode == 1 and "not-a-key-1234" not in r.stdout + r.stderr
+    assert run("gen-index-keys").returncode == 1
+    assert run("gen-index-keys", "--public-of", "--out", str(d)).returncode == 1
+
+
 def test_gen_index_keys_never_overwrites(tmp_path):
     d = mkdir(tmp_path)
     assert run("gen-index-keys", "--out", str(d)).returncode == 0
@@ -285,18 +298,32 @@ def test_refresh_raises_the_version_so_hosts_do_not_see_a_rollback(tmp_path, key
     assert vi._rollback(second, first) == [] and vi.check_index(second, previous=first, official=True, now=later) == []
 
 
-def test_first_signing_does_not_bump_the_version(tmp_path, key):
-    _, out = sign_cli(tmp_path, key, doc=index(version=7))
-    assert out["version"] == 7
+def test_every_file_written_has_the_input_version_plus_one(tmp_path, key):
+    """H1: first signing, content change after a signed version, key switch and refresh all raise the version by one, so
+    the gate's rollback check (previous = main's index) and core's floor accept the re-sign PR."""
+    main = index(version=7)  # main, unsigned
+    _, first = sign_cli(tmp_path, key, doc=main)
+    assert first["version"] == 8 and vi._rollback(first, main) == []
+    changed = copy.deepcopy(first)  # develop -> main merged new content with a raised version
+    changed["version"] += 1
+    changed["addons"].append(entry("beta"))
+    _, second = sign_cli(tmp_path, key, doc=changed, now=NOW + 1)
+    assert second["version"] == changed["version"] + 1 and vi._rollback(second, changed) == []
+    other = ms.new_private_key()  # key switch: entries were made by the old key, so the publishers are re-made by the new
+    stripped = copy.deepcopy(second)
+    for e in stripped["addons"]:
+        e.pop("publisher")
+    _, third = sign_cli(tmp_path, other, doc=stripped, now=NOW + 2)
+    assert third["version"] == second["version"] + 1 and vi._rollback(third, second) == []
 
 
-def test_index_changed_after_signing_keeps_the_authors_version(tmp_path, key):
+def test_index_changed_after_signing_gets_one_more_version(tmp_path, key):
     _, first = sign_cli(tmp_path, key, doc=index())
     changed = copy.deepcopy(first)
     changed["version"] += 1
     changed["addons"].append(entry("beta"))
     r, out = sign_cli(tmp_path, key, doc=changed, now=NOW + 1)
-    assert r.returncode == 0 and out["version"] == first["version"] + 1  # the old signature no longer verified: no extra bump
+    assert r.returncode == 0 and out["version"] == first["version"] + 2  # the author's raise, plus the signing raise
     assert core_accepts(out, (ms.public_text(key),), now=NOW + 1)
     assert [e["id"] for e in out["addons"]] == ["zeta", "alpha", "beta"]
 
@@ -322,8 +349,10 @@ def test_if_needed_resigns_when_unsigned_or_signed_by_another_key(tmp_path, key)
 def test_signing_changes_nothing_but_the_allowed_fields(tmp_path, key):
     src = index(revoked=["a@1.0.0"], title="Hello")
     _, out = sign_cli(tmp_path, key, doc=src)
-    assert ({k: v for k, v in out.items() if k not in ("expires_at", "signature")}
-            | {"addons": [{k: v for k, v in e.items() if k != "publisher"} for e in out["addons"]]}) == src  # fmt: skip
+    assert ({k: v for k, v in out.items() if k not in ("expires_at", "signature", "version")}
+            | {"addons": [{k: v for k, v in e.items() if k != "publisher"} for e in out["addons"]]}) == {
+                k: v for k, v in src.items() if k != "version"}  # fmt: skip
+    assert out["version"] == src["version"] + 1
 
 
 # -- refusals -----------------------------------------------------------------------------------------------------------------
