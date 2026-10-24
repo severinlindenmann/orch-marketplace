@@ -1,0 +1,86 @@
+#!/usr/bin/env python3
+"""Make the two official index keys: current and next (P-256). No network.
+
+    gen-index-keys --out DIR
+    gen-index-keys --public-of < FILE
+
+DIR must already exist, be yours, be mode 0700 and hold no key yet: create it with `mktemp -d`.
+Run it as the owner on a machine where no agent runs (docs/signing.md). It writes DIR/current.key and DIR/next.key (mode 0600, one line each, the private scalar and nothing else, so each file
+can be piped as it is into `gh secret set ... < file` or a password manager) and prints ONLY the public halves, in the
+form core pins them (OFFICIAL_KEYS in orch/market/constants.py). A private key is never printed.
+Move the keys to the secret store, then delete DIR (see docs/signing.md).
+
+``--public-of`` reads one private key file from stdin and prints only its public half: use it to check that a stored
+copy is the key you pinned, BEFORE deleting the key files.
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import stat
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import market_sign as ms  # noqa: E402
+
+
+def die(msg: str) -> "None":
+    print(f"gen-index-keys: {msg}", file=sys.stderr)
+    raise SystemExit(1)
+
+
+def check_dir(d: Path) -> None:
+    try:
+        st = os.lstat(d)
+    except OSError:
+        die(f"{d} does not exist; create it first: mktemp -d")
+    if not stat.S_ISDIR(st.st_mode):
+        die(f"{d} is not a directory (a symlink is refused)")
+    if st.st_uid != os.getuid():
+        die(f"{d} is not owned by you")
+    if st.st_mode & 0o077:
+        die(f"{d} must not be accessible to group or others (mode 0700)")
+    if any(d.iterdir()):
+        die(f"{d} is not empty; use a fresh directory")
+
+
+def write_private(path: Path, text: str) -> None:
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(text)  # no trailing newline, no label: the file is the secret and nothing else
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap.add_argument("--out", help="existing empty directory, mode 0700, for current.key and next.key")
+    ap.add_argument("--public-of", action="store_true", help="print the public half of the key on stdin")
+    a = ap.parse_args(argv)
+    if a.public_of == (a.out is not None):
+        die("give exactly one of --out DIR or --public-of")
+    if a.public_of:
+        try:  # bytes in, one fixed message out: no exception text can carry a byte of the input
+            print(ms.public_text(ms.load_private(sys.stdin.buffer.read().decode("ascii"))))
+        except Exception:  # noqa: BLE001
+            die("not a key file written by gen-index-keys")
+        return 0
+    out = Path(a.out)
+    check_dir(out)
+    keys = {"current": ms.new_private_key(), "next": ms.new_private_key()}
+    for name, key in keys.items():
+        write_private(out / f"{name}.key", ms.private_text(key))
+    print("Public halves (paste these into orch-core src/orch/market/constants.py, current first):\n")
+    print("OFFICIAL_KEYS: tuple[str, ...] = (")
+    for name, key in keys.items():
+        print(f'    "{ms.public_text(key)}",  # {name}')
+    print(")\n")
+    print(f"Private keys written (mode 0600): {out}/current.key  {out}/next.key")
+    print("NOW: move current.key into the GitHub Environment secret and next.key into the secret store,")
+    print("then delete the directory. These files are the only copy of the private keys. They are never to be")
+    print("committed, pasted or read out; nothing here printed them.")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
