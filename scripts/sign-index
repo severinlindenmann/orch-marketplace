@@ -2,6 +2,7 @@
 """Sign marketplace.json with the official index key (spec 3.1, 4.3) and set or refresh ``expires_at``.
 
     sign-index [--index marketplace.json] [--days 30] [--if-needed [--refresh-below-days 10]] [--expect-pub KEY,KEY]
+               [--rekey]
     sign-index --verify-only --pub KEY,KEY [--index marketplace.json] [--min-days N]
 
 The private key is read from the environment variable ORCH_MARKET_INDEX_KEY, or, when that is unset, from stdin (one
@@ -19,6 +20,9 @@ Nothing but expires_at, signature, version (as in 3) and entry publishers change
 
 --if-needed writes nothing while the signature verifies, every entry is signed and more than --refresh-below-days remain.
 --expect-pub: refuse to sign unless the key's public half is one of these (the pins in core); the signing job sets it.
+--rekey: the key rotation (orch-core #1191). Without it an entry whose publisher was made by another key is refused.
+  With it (needs --expect-pub) such an entry is re-signed with this key, but only when its old key is one of the
+  --expect-pub keys too: a publisher made by any key core does not pin is never overwritten.
 """
 
 from __future__ import annotations
@@ -84,7 +88,8 @@ def needs_signing(doc: dict[str, Any], pubs: tuple[str, ...], now: int, below_da
     return doc["expires_at"] - now <= below_days * DAY
 
 
-def sign_doc(doc: dict[str, Any], key, *, now: int, days: int) -> dict[str, Any]:
+def sign_doc(doc: dict[str, Any], key, *, now: int, days: int, rekey: tuple[str, ...] = ()) -> dict[str, Any]:
+    """``rekey``: the pinned keys whose entry publishers may be replaced by this key (empty: none, the default)."""
     pub = ms.public_text(key)
     new = copy.deepcopy(doc)
     bump = 1  # one invariant: every file written has input version + 1 (first signing, content change, key switch, refresh)
@@ -92,7 +97,10 @@ def sign_doc(doc: dict[str, Any], key, *, now: int, days: int) -> dict[str, Any]
     for e in new["addons"]:
         p = e.get("publisher")
         if p is not None and p["key"] != pub:
-            die(f"entry {e['id']} has a publisher key that is not the official key; refusing to overwrite it")
+            if p["key"] not in rekey:
+                die(f"entry {e['id']} has a publisher key that is not the official key; refusing to overwrite it"
+                    + ("" if rekey else " (a rotation to this key needs --rekey)"))  # fmt: skip
+            p = None  # rotation: made by the other pinned key, re-signed with this one
         e["publisher"] = {"key": pub, "sig": p["sig"] if p else ""}
         if not (p and ms.verify(pub, p["sig"], ms.entry_message(e, market))):
             e["publisher"]["sig"] = ms.sign(key, ms.entry_message(e, market))
@@ -131,6 +139,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--if-needed", action="store_true")
     ap.add_argument("--refresh-below-days", type=int, default=10)
     ap.add_argument("--expect-pub", default=os.environ.get("ORCH_MARKET_INDEX_PUBS", ""))
+    ap.add_argument("--rekey", action="store_true")
     ap.add_argument("--verify-only", action="store_true")
     ap.add_argument("--pub", default="")
     ap.add_argument("--min-days", type=int, default=0)
@@ -142,6 +151,8 @@ def main(argv: list[str] | None = None) -> int:
     path = Path(a.index)
     doc = load_index(path)
 
+    if a.rekey and a.verify_only:
+        die("--rekey and --verify-only exclude each other")
     if a.verify_only:
         pubs = keys_arg(a.pub)
         if not pubs:
@@ -164,10 +175,12 @@ def main(argv: list[str] | None = None) -> int:
     expect = keys_arg(a.expect_pub)
     if a.expect_pub and not expect or (expect and pub not in expect):
         die("the key's public half is not one of the expected (pinned) keys; wrong secret?")
+    if a.rekey and not expect:
+        die("--rekey needs --expect-pub (the pinned keys): only entries made by a pinned key are re-keyed")
     if a.if_needed and not needs_signing(doc, (pub,), now, a.refresh_below_days):
         print(f"unchanged: signed, entries signed, expires in {(doc['expires_at'] - now) // DAY} day(s)")
         return 0
-    new = sign_doc(doc, key, now=now, days=a.days)
+    new = sign_doc(doc, key, now=now, days=a.days, rekey=expect if a.rekey else ())
     write_atomic(path, new)
     print(f"signed: index version {new['version']}, expires_at {new['expires_at']}, public key {pub[:12]}...")
     return 0

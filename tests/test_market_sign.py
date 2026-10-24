@@ -417,6 +417,61 @@ def test_an_entry_published_by_another_key_is_not_overwritten(tmp_path, key):
     assert r.returncode == 1 and "publisher" in r.stderr
 
 
+# -- rotation (--rekey, orch-core #1191) -----------------------------------------------------------------------------------
+
+def test_rekey_moves_every_entry_and_the_index_to_the_next_key(tmp_path, key):
+    cur, newnext = ms.public_text(key), ms.public_text(ms.new_private_key())
+    _, first = sign_cli(tmp_path, key, doc=index())
+    nkey = ms.new_private_key()
+    nxt = ms.public_text(nkey)
+    r, out = sign_cli(tmp_path, nkey, "--rekey", "--expect-pub", f"{cur},{nxt}")
+    assert r.returncode == 0, r.stderr
+    assert out["signature"]["key"] == nxt and {e["publisher"]["key"] for e in out["addons"]} == {nxt}
+    assert out["version"] == first["version"] + 1  # a host that saw the old payload sees a newer version, no rollback
+    assert core_accepts(out, (cur, nxt)) and core_accepts(out, (nxt, newnext))  # the old release and the next one
+    assert not core_accepts(out, (cur,)) and not core_accepts(first, (nxt, newnext))  # the retired key is gone
+    strip = lambda d: [{k: v for k, v in e.items() if k != "publisher"} for e in d["addons"]]  # noqa: E731
+    assert strip(out) == strip(first)  # nothing but the publishers changed in the entries
+
+
+def test_without_rekey_a_rotation_is_refused_and_nothing_is_written(tmp_path, key):
+    sign_cli(tmp_path, key, doc=index())
+    before = (tmp_path / "marketplace.json").read_bytes()
+    nkey = ms.new_private_key()
+    r, _ = sign_cli(tmp_path, nkey, "--expect-pub", f"{ms.public_text(key)},{ms.public_text(nkey)}")
+    assert r.returncode == 1 and "--rekey" in r.stderr and (tmp_path / "marketplace.json").read_bytes() == before
+
+
+def test_rekey_needs_the_pinned_keys(tmp_path, key):
+    sign_cli(tmp_path, key, doc=index())
+    before = (tmp_path / "marketplace.json").read_bytes()
+    r, _ = sign_cli(tmp_path, ms.new_private_key(), "--rekey", "--expect-pub", "")
+    assert r.returncode == 1 and "--expect-pub" in r.stderr and (tmp_path / "marketplace.json").read_bytes() == before
+    nkey = ms.new_private_key()
+    r, _ = sign_cli(tmp_path, nkey, "--rekey", "--expect-pub", ms.public_text(key))  # the signing key is not pinned
+    assert r.returncode == 1 and (tmp_path / "marketplace.json").read_bytes() == before
+
+
+def test_rekey_never_overwrites_a_publisher_made_by_an_unpinned_key(tmp_path, key):
+    doc = index()
+    stranger = ms.new_private_key()
+    e = doc["addons"][0]
+    e["publisher"] = {"key": ms.public_text(stranger), "sig": ""}
+    e["publisher"]["sig"] = ms.sign(stranger, ms.entry_message(e, URL))
+    p = write(tmp_path, doc)
+    before = p.read_bytes()
+    nkey = ms.new_private_key()
+    r, _ = sign_cli(tmp_path, nkey, "--rekey", "--expect-pub", f"{ms.public_text(key)},{ms.public_text(nkey)}")
+    assert r.returncode == 1 and "publisher" in r.stderr and p.read_bytes() == before
+
+
+def test_rekey_and_verify_only_exclude_each_other(tmp_path, key):
+    sign_cli(tmp_path, key, doc=index())
+    r = run("sign-index", "--index", str(tmp_path / "marketplace.json"), "--verify-only", "--rekey",
+            "--pub", ms.public_text(key))  # fmt: skip
+    assert r.returncode == 1 and "exclude" in r.stderr
+
+
 def test_days_out_of_range_refused(tmp_path, key):
     assert sign_cli(tmp_path, key, "--days", "0", doc=index())[0].returncode == 1
     assert sign_cli(tmp_path, key, "--days", "91")[0].returncode == 1
