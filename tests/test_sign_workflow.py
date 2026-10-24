@@ -38,6 +38,7 @@ def test_signing_fails_closed_without_pinned_public_keys():
 def test_result_goes_to_a_pull_request_never_to_main():
     assert "gh pr create --base main" in WF
     assert not re.search(r"git push[^\n]* (origin )?main\b", WF)
+    assert not re.search(r"git -c ", WF), "the token must not appear in argv"
     assert "--force" not in WF and " -f " not in WF
     assert 'branch="index-resign-${RUN_ID}"' in WF  # a fresh branch per run: no force needed
 
@@ -86,3 +87,24 @@ def test_skipping_because_a_pr_is_open_fails_visibly_when_the_signature_is_runni
     assert "::error::" in step and "::notice::" in step
     assert re.search(r"::error::[^\n]*\n\s+exit 1", step)
     assert "git show HEAD:marketplace.json" in step  # the signature on main, not the one just made
+
+
+def test_token_reaches_git_through_environment_config_not_argv():
+    assert "GIT_CONFIG_COUNT=1" in WF and "GIT_CONFIG_VALUE_0=" in WF
+    assert "unset GIT_CONFIG_COUNT" in WF
+    assert "git -c" not in WF
+
+
+def test_re_sign_pr_body_carries_the_merge_back_command():
+    assert "gh pr create --repo severinlindenmann/orch-marketplace --base develop --head main" in WF
+    assert "merge main (re-sign) back into develop" in WF
+
+
+def test_no_other_workflow_names_the_signing_environment_or_uses_privileged_triggers_with_it():
+    """L3: for pull_request_target / workflow_run `github.ref` is the base/default branch, which an Environment limited to
+    main would allow. Only sign-index.yml may name index-signing, and it has neither trigger."""
+    for wf in sorted((ROOT / ".github" / "workflows").glob("*.y*ml")):
+        text = "\n".join(line for line in wf.read_text().splitlines() if not line.lstrip().startswith("#"))
+        if wf.name != "sign-index.yml":
+            assert "index-signing" not in text and "ORCH_MARKET_INDEX_KEY" not in text, wf.name
+    assert "pull_request_target" not in WF and "workflow_run" not in WF and "workflow_call" not in WF

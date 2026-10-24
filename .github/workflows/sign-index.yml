@@ -89,12 +89,19 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout -b "$branch"
           git commit -qam "chore(index): re-sign marketplace.json"
-          auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')
-          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic ${auth}" push origin "$branch"
+          # the token goes through git's environment config, not through argv (visible in the process list)
+          export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="http.https://github.com/.extraheader"
+          export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')"
+          git push origin "$branch"
+          unset GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0
           gh pr create --base main --head "$branch" --title "chore(index): re-sign marketplace.json" --body-file - <<'BODY'
           Signed by the `sign-index` workflow in Environment `index-signing`. Only `expires_at`, `version`, entry `publisher`
           signatures and `signature` may differ; the workflow asserted that before opening this PR.
 
           Checks do not start on a PR opened by the Actions token: close and reopen this PR once, wait for the `index` check, then merge.
           Hosts refuse an older index, so merge in order and never merge a re-sign over a newer index version.
+
+          After merging, bring main back into develop (otherwise the next develop -> main promotion fails "version lower"):
+
+              gh pr create --repo severinlindenmann/orch-marketplace --base develop --head main --title "chore: merge main (re-sign) back into develop" --body "Brings the signed index back; no other change."
           BODY
