@@ -119,16 +119,40 @@ gh pr create --repo severinlindenmann/orch-marketplace --base develop --head mai
 
 Core accepts a re-keyed official entry when the new key is one this core release pins (orch-core #1191): the review shows
 the new key as a first use, the update as widened, and the host's remembered key moves to it. A key core does not pin is
-refused (`market.official_unsigned`), so a retired key is never taken back. Every other marketplace keeps strict TOFU.
+refused (`market.official_unsigned`, also at submit), so a retired key is never taken back. Every other marketplace keeps
+strict TOFU. For the official class the remembered key is information only; the pins in core are the control.
 
 1. A core release with #1191 is out (hosts on older cores would refuse the re-keyed entries).
-2. The owner replaces the Environment secret `ORCH_MARKET_INDEX_KEY` with `next.key`, then signs once with
-   `sign-index --rekey --expect-pub <current>,<next>`: every entry publisher and the index signature move to the next
-   key, version + 1. `--rekey` re-signs only entries whose old key is one of `--expect-pub`; an entry made by any other
-   key is refused, as without `--rekey`. (The workflow has no `--rekey` input yet; add it, or run it once by hand with the
-   key on stdin, before rotating.) Merge the re-sign PR and the main -> develop back-merge as usual.
-3. Only after step 2 is on main: the owner makes a new next key (`gen-index-keys`, owner custody), and a core release pins
-   `(next, new next)`; `ORCH_MARKET_INDEX_PUBS` becomes `<next>,<new next>`. A core that pins the new pair before step 2
-   is on main would refuse the official index (`market.index_unsigned`).
+2. Switch the secret to the next key and dispatch the rotation right after, on the owner account (between the two, the
+   daily `--if-needed` run fails closed and writes nothing):
+
+   ```
+   source <(~/orch-dev/scripts/pass-login.sh)   # owner-only variant: read it from the owner's own store instead
+   pass-cli item view --vault-name Agents --item-title "orch market index key (next)" --field password \
+     | gh secret set ORCH_MARKET_INDEX_KEY --env index-signing --repo severinlindenmann/orch-marketplace
+   gh workflow run sign-index --repo severinlindenmann/orch-marketplace --ref main -f rekey=true
+   ```
+
+   The run signs with `sign-index --rekey --expect-pub $ORCH_MARKET_INDEX_PUBS` (no `--if-needed`): every entry made by
+   a pinned key and the index signature move to the next key, version + 1; an entry made by any other key is refused.
+   Merge the re-sign PR (close and reopen it once for the `index` check) and the main -> develop back-merge as usual.
+3. Check that step 2 is on main, with the next key ALONE:
+
+   ```
+   git -C <checkout> fetch origin main && git -C <checkout> show origin/main:marketplace.json > "$D0/main.json"
+   $PY scripts/sign-index --verify-only --pub <next-pub> --index "$D0/main.json"    # must print "verified: ..."
+   ```
+
+   (`D0=$(mktemp -d ~/orch-dev/.tidx-XXXX)`, removed with `rmtmp.sh` after.) Only then delete the Proton Pass item
+   "orch market index key (next)": that key is now the current key, which has no backup by design (lost = rotate again).
+   Owner-only variant: delete it from the owner's own store.
+4. A new next key. `gen-index-keys --out "$D"` always writes two files: **`$D/next.key` becomes the new next key** (it
+   matches the second public half it prints); **`$D/current.key` is not used and is destroyed** with the directory.
+   Store `$D/next.key` as in "Operator steps" step 3 (same custody choice), then repeat step 4's check before deleting
+   anything: `--public-of` of the stored copy must print the same public half as `--public-of < "$D/next.key"`, and that
+   must equal the second line `gen-index-keys` printed. Then `rmtmp.sh "$D"`.
+5. A core release pins `(next, new next)` (constants.py, next first), and `ORCH_MARKET_INDEX_PUBS` becomes
+   `<next>,<new next>` when it is merged. A core that pins the new pair before step 3 passes would refuse the official
+   index (`market.index_unsigned`).
 
 Last reviewed: 24 Oct 2026 (V3-D39).
