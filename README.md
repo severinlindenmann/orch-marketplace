@@ -34,6 +34,8 @@ every change; a lower version than one already seen is a rollback and is refused
 `expires_at` and a signature by the official key pinned in core (spec 3.1); both are added by the release step, not
 by hand.
 
+Signing, the key script and the operator steps: [`docs/signing.md`](docs/signing.md).
+
 ## CI
 
 `.github/workflows/ci.yml` runs `scripts/validate_index.py --fetch` on every pull request and push:

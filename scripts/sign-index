@@ -1,0 +1,177 @@
+#!/usr/bin/env python3
+"""Sign marketplace.json with the official index key (spec 3.1, 4.3) and set or refresh ``expires_at``.
+
+    sign-index [--index marketplace.json] [--days 30] [--if-needed [--refresh-below-days 10]] [--expect-pub KEY,KEY]
+    sign-index --verify-only --pub KEY,KEY [--index marketplace.json] [--min-days N]
+
+The private key is read from the environment variable ORCH_MARKET_INDEX_KEY, or, when that is unset, from stdin (one
+line, as gen-index-keys wrote it). It is never taken from an argument, never printed, never written.
+
+What it does, in this order:
+  1. the index must be valid on its own (schema and offline rules of scripts/validate_index.py);
+  2. every entry gets ``publisher`` = {official key, signature over the entry and this market's URL} (kept as it is if it
+     already verifies, so a refresh does not touch the entries);
+  3. ``expires_at`` = now + --days; if the file already carries a signature that verifies with this key, ``version`` is
+     raised by one: a host that has seen this version holds its signed payload, and the same version with a different
+     payload (here: a new expires_at) is a rollback for it (core check_floor);
+  4. the index signature is made and the result is verified with core's rules before the file is replaced, atomically.
+Nothing but expires_at, signature, version (as in 3) and entry publishers changes; this is asserted before writing.
+
+--if-needed writes nothing while the signature verifies, every entry is signed and more than --refresh-below-days remain.
+--expect-pub: refuse to sign unless the key's public half is one of these (the pins in core); the signing job sets it.
+"""
+
+from __future__ import annotations
+
+import argparse
+import copy
+import os
+import sys
+import tempfile
+import time
+from pathlib import Path
+from typing import Any
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import market_sign as ms  # noqa: E402
+import validate_index as vi  # noqa: E402
+
+KEY_ENV = "ORCH_MARKET_INDEX_KEY"
+DAY = 86400
+
+
+def die(msg: str) -> "None":
+    print(f"sign-index: {msg}", file=sys.stderr)
+    raise SystemExit(1)
+
+
+def read_key() -> str:
+    text = os.environ.get(KEY_ENV, "")
+    if not text.strip():
+        if sys.stdin.isatty():
+            die(f"no key: set {KEY_ENV} or pipe the key file into stdin")
+        text = sys.stdin.read()
+    if not text.strip():
+        die("the key is empty")
+    return text
+
+
+def load_index(path: Path) -> dict[str, Any]:
+    try:
+        doc = vi.strict_loads(path.read_text())
+    except (OSError, vi.Invalid) as e:
+        die(f"cannot read {path}: {e}")
+    problems = vi.check_index(doc)
+    if problems:
+        die("the index is not valid, nothing signed:\n  " + "\n  ".join(problems))
+    return doc
+
+
+def content(doc: dict[str, Any], bump: int) -> dict[str, Any]:
+    """The doc without what signing may change; used to assert that signing changed nothing else."""
+    d = copy.deepcopy(doc)
+    for k in ("expires_at", "signature"):
+        d.pop(k, None)
+    d["version"] -= bump
+    for e in d["addons"]:
+        e.pop("publisher", None)
+    return d
+
+
+def needs_signing(doc: dict[str, Any], pubs: tuple[str, ...], now: int, below_days: int) -> bool:
+    if not ms.verify_index(doc, pubs) or not ms.verify_entries(doc, pubs):
+        return True
+    return doc["expires_at"] - now <= below_days * DAY
+
+
+def sign_doc(doc: dict[str, Any], key, *, now: int, days: int) -> dict[str, Any]:
+    pub = ms.public_text(key)
+    new = copy.deepcopy(doc)
+    bump = 1 if ms.verify_index(doc, (pub,)) else 0
+    market = new["source"]["git"]
+    for e in new["addons"]:
+        p = e.get("publisher")
+        if p is not None and p["key"] != pub:
+            die(f"entry {e['id']} has a publisher key that is not the official key; refusing to overwrite it")
+        e["publisher"] = {"key": pub, "sig": p["sig"] if p else ""}
+        if not (p and ms.verify(pub, p["sig"], ms.entry_message(e, market))):
+            e["publisher"]["sig"] = ms.sign(key, ms.entry_message(e, market))
+    new["version"] += bump
+    new["expires_at"] = now + days * DAY
+    new.pop("signature", None)
+    new["signature"] = {"key": pub, "sig": ms.sign(key, ms.signed_message(new))}
+    if content(new, bump) != content(doc, 0):
+        die("internal error: signing would change more than expires_at, version, publishers and the signature")
+    if not (ms.verify_index(new, (pub,)) and ms.verify_entries(new, (pub,))):
+        die("internal error: the result does not verify with core's rules")
+    problems = vi.check_index(new, official=True, now=now)
+    if problems:
+        die("the signed index fails the official checks:\n  " + "\n  ".join(problems))
+    return new
+
+
+def write_atomic(path: Path, doc: dict[str, Any]) -> None:
+    import json
+
+    text = json.dumps(doc, indent=2, ensure_ascii=False) + "\n"
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".sign-index-")
+    with os.fdopen(fd, "w") as f:
+        f.write(text)
+    os.replace(tmp, path)
+
+
+def keys_arg(s: str) -> tuple[str, ...]:
+    return tuple(k for k in (x.strip() for x in s.split(",")) if k)
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap.add_argument("--index", default="marketplace.json")
+    ap.add_argument("--days", type=int, default=30)
+    ap.add_argument("--if-needed", action="store_true")
+    ap.add_argument("--refresh-below-days", type=int, default=10)
+    ap.add_argument("--expect-pub", default=os.environ.get("ORCH_MARKET_INDEX_PUBS", ""))
+    ap.add_argument("--verify-only", action="store_true")
+    ap.add_argument("--pub", default="")
+    ap.add_argument("--min-days", type=int, default=0)
+    ap.add_argument("--now", type=int, help=argparse.SUPPRESS)  # tests
+    a = ap.parse_args(argv)
+    if not 1 <= a.days <= 90:
+        die("--days must be 1 to 90")
+    now = int(time.time()) if a.now is None else a.now
+    path = Path(a.index)
+    doc = load_index(path)
+
+    if a.verify_only:
+        pubs = keys_arg(a.pub)
+        if not pubs:
+            die("--verify-only needs --pub")
+        if not (ms.verify_index(doc, pubs) and ms.verify_entries(doc, pubs)):
+            print("FAIL market.index_unsigned: the index or an entry does not verify with the given key(s)")
+            return 1
+        if doc["expires_at"] - now < a.min_days * DAY:
+            print(f"FAIL expires_at is less than {a.min_days} day(s) away")
+            return 1
+        print(f"verified: index version {doc['version']}, {len(doc['addons'])} entr(y/ies), "
+              f"expires in {(doc['expires_at'] - now) // DAY} day(s)")  # fmt: skip
+        return 0
+
+    try:
+        key = ms.load_private(read_key())
+    except ms.SignError:
+        die("the key is not valid (expected the one-line file written by gen-index-keys)")  # never echo the input
+    pub = ms.public_text(key)
+    expect = keys_arg(a.expect_pub)
+    if a.expect_pub and not expect or (expect and pub not in expect):
+        die("the key's public half is not one of the expected (pinned) keys; wrong secret?")
+    if a.if_needed and not needs_signing(doc, (pub,), now, a.refresh_below_days):
+        print(f"unchanged: signed, entries signed, expires in {(doc['expires_at'] - now) // DAY} day(s)")
+        return 0
+    new = sign_doc(doc, key, now=now, days=a.days)
+    write_atomic(path, new)
+    print(f"signed: index version {new['version']}, expires_at {new['expires_at']}, public key {pub[:12]}...")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
