@@ -683,7 +683,32 @@ def check_api_1_1(m: dict[str, Any]) -> None:
         check_settings_schema(st["schema"])
 
 
-def check_manifest(entry: dict[str, Any], manifest_bytes: bytes) -> None:
+def _lockfile_module():
+    """Core's own lockfile parser (vendored byte-identical under ``scripts/vendor``, with a stub for the one name it
+    takes from core's ``orch.market``). Loaded on first use so that ``-I`` (no script directory on the path) works."""
+    vendor = str(Path(__file__).resolve().parent / "vendor")
+    if vendor not in sys.path:
+        sys.path.insert(0, vendor)
+    from orch.addons import lockfile  # noqa: PLC0415
+
+    return lockfile
+
+
+def check_lock(runtime: dict[str, Any], files: dict[str, bytes]) -> None:
+    """The lockfile a package declares (``runtime.lock``) is refused exactly as core refuses it, so that a bad entry is
+    caught before signing: ``market.lock_missing`` when the file is not in the package, otherwise core's own parser
+    (bounded: the lockfile byte and row caps of core apply; offline, pure). Raises :class:`Invalid`."""
+    lockfile = _lockfile_module()
+    data = files.get(runtime["lock"])
+    if data is None:
+        raise Invalid("market.lock_missing: the lockfile named by runtime.lock is not in the package")
+    try:
+        lockfile.check(runtime["kind"], data)
+    except Exception as e:  # MarketError from the vendored copy; anything else is a bug and also refuses
+        raise Invalid(f"{getattr(e, 'code', 'market.lock_invalid')}: the lockfile is refused") from None
+
+
+def check_manifest(entry: dict[str, Any], manifest_bytes: bytes, files: dict[str, bytes] | None = None) -> None:
     try:
         m = strict_loads(manifest_bytes.decode())
     except (Invalid, UnicodeDecodeError) as e:
@@ -705,6 +730,8 @@ def check_manifest(entry: dict[str, Any], manifest_bytes: bytes) -> None:
         raise Invalid("market.manifest_mismatch: manifest runtime differs from the entry")
     check_manifest_schema(m)
     check_api_1_1(m)
+    if "runtime" in m:  # the schema has made it {kind, lock}
+        check_lock(m["runtime"], files or {})
 
 
 MIN_GIT = (2, 37)  # http.curloptResolve (an older git ignores the key, which would switch the address pin off)
@@ -731,7 +758,7 @@ def check_entry(entry: dict[str, Any], fetch=fetch_commit, reach=ensure_reachabl
         files = export_package(repo, entry["commit"], entry["source"].get("subdir"), env)
         if package_digest(files) != entry["package_sha256"]:
             raise Invalid(f"market.digest_mismatch: computed {package_digest(files)}")
-        check_manifest(entry, files[MANIFEST_FILE])
+        check_manifest(entry, files[MANIFEST_FILE], files)
     finally:
         _rmtree(home)
 

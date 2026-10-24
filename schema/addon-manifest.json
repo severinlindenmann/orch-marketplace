@@ -558,6 +558,28 @@
       "type": "string",
       "maxLength": 200,
       "description": "empty, or one line (8.1); the first-character rule is checked by validate()"
+    },
+    "runtime": {
+      "type": "object",
+      "description": "orch.addon/3 only (spec 8.1): the one lockfile of the add-on's dependencies. kind picks the rules, lock is a path inside the package (checked in load_manifest). Installed by orch after the owner signs; no package script ever runs.",
+      "properties": {
+        "kind": {
+          "enum": [
+            "python-requirements",
+            "node-package-lock"
+          ]
+        },
+        "lock": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        }
+      },
+      "required": [
+        "kind",
+        "lock"
+      ],
+      "additionalProperties": false
     }
   },
   "additionalProperties": false,
@@ -619,6 +641,11 @@
             {
               "required": [
                 "min_core"
+              ]
+            },
+            {
+              "required": [
+                "runtime"
               ]
             }
           ]

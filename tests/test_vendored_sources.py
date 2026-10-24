@@ -37,7 +37,9 @@ def test_an_edited_copy_is_reported(tmp_path):
 def test_the_record_names_a_full_commit_and_a_sha256_for_every_file():
     rec = json.loads(cv.RECORD.read_text())
     assert {f["local"] for f in rec["files"]} == {"schema/addon-manifest.json", "schema/common.json",
-                                                  "tests/vectors_market.json"}  # fmt: skip
+                                                  "tests/vectors_market.json",
+                                                  "scripts/vendor/orch/addons/lockfile.py",
+                                                  "scripts/vendor/orch/addons/envtree.py"}  # fmt: skip
     for f in rec["files"]:
         assert len(f["commit"]) == 40 and len(f["sha256"]) == 64 and (ROOT / f["local"]).exists()
 

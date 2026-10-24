@@ -41,13 +41,42 @@ def test_core_index_vector(case):
             assert problems[0].startswith(code), problems
 
 
-# The vector kinds this validator answers. The rest are core-internal (install policy, lockfile parser, environment
-# tree and stamp) and have no counterpart here; a NEW kind in a re-vendored file must be handled or listed on purpose.
-CORE_ONLY = {"install", "lock", "env_paths", "env_stamp"}
+# The vector kinds this validator answers. The rest are core-internal (install policy, environment tree and stamp)
+# and have no counterpart here; a NEW kind in a re-vendored file must be handled or listed on purpose.
+CORE_ONLY = {"install", "env_paths", "env_stamp"}
 
 
 def test_every_vector_kind_is_run_here_or_core_only():
-    assert {c["check"] for c in ALL} - CORE_ONLY == {"index", "tree", "address"}
+    assert {c["check"] for c in ALL} - CORE_ONLY == {"index", "tree", "address", "lock"}
+
+
+@pytest.mark.parametrize("case", [c for c in ALL if c["check"] == "lock"], ids=lambda c: c["name"])
+def test_core_lock_vector(case):
+    a = case["args"]
+    runtime = {"kind": a["kind"], "lock": "requirements.lock"}
+    files = {"requirements.lock": a["text"].encode()}
+    if "ok" in case["expect"]:
+        v.check_lock(runtime, files)
+    else:
+        with pytest.raises(v.Invalid) as ei:
+            v.check_lock(runtime, files)
+        assert str(ei.value).startswith(case["expect"]["refuse"])
+
+
+def test_a_package_whose_lockfile_is_missing_or_bad_is_refused_by_check_manifest():
+    good = "requests==2.32.3 --hash=sha256:" + "a" * 64 + "\n"
+    m = manifest(settings=SETTINGS, runtime={"kind": "python-requirements", "lock": "req.lock"})
+    e = {**_routing_entry(), "runtime": m["runtime"]}
+    raw = json.dumps(m).encode()
+    v.check_manifest(e, raw, {"req.lock": good.encode()})
+    with pytest.raises(v.Invalid, match="market.lock_missing"):
+        v.check_manifest(e, raw, {})
+    with pytest.raises(v.Invalid, match="market.lock_missing"):
+        v.check_manifest(e, raw)
+    with pytest.raises(v.Invalid, match="market.lock_invalid"):
+        v.check_manifest(e, raw, {"req.lock": b"requests>=2\n"})
+    with pytest.raises(v.Invalid, match="market.lock_invalid"):
+        v.check_manifest(e, raw, {"req.lock": b"x" * ((1 << 20) + 1)})
 
 
 @pytest.mark.parametrize("case", [c for c in ALL if c["check"] == "tree"], ids=lambda c: c["name"])
