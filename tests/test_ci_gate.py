@@ -101,14 +101,15 @@ def test_gate_job_is_named_index_and_has_read_only_token():
 def test_gate_checks_out_the_base_never_the_pr_head():
     assert LIVE.count("actions/checkout@") == 1
     ref = re.search(r"^\s+ref: (.+)$", LIVE, re.M).group(1)
-    assert "pull_request.base.sha" in ref and "head" not in ref
+    assert ref == "${{ github.sha }}", "the base tip (pull_request_target) or the pushed commit; never the PR head"
+    assert "persist-credentials: false" in LIVE
     assert "repository:" not in LIVE  # never a fork's repository
 
 
 def test_gate_runs_the_validator_from_the_checked_out_base_tree_on_extracted_data():
     assert "python -I scripts/validate_index.py" in LIVE and "python -I scripts/check_scope.py" in LIVE
     assert 'git show "$HEAD_SHA:marketplace.json"' in LIVE  # the PR contributes data only
-    assert "pip install -r requirements-ci.txt" in LIVE  # from the base tree
+    assert "pip install --require-hashes -r requirements-ci.txt" in LIVE  # from the base tree
 
 
 def test_gate_never_interpolates_event_text_into_a_script():
@@ -144,3 +145,4 @@ def test_codeowners_cover_the_gate():
     owners = (ROOT / ".github" / "CODEOWNERS").read_text()
     for path in ("/.github/", "/scripts/", "/schema/", "/requirements-ci.txt"):
         assert re.search(rf"^{re.escape(path)}\s+@\S+", owners, re.M), path
+

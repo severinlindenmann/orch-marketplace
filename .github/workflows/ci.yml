@@ -4,7 +4,11 @@ name: ci
 #   * pull_request_target runs this workflow file from the base branch, so a PR cannot edit its own gate;
 #   * the PR's head is only fetched as data (`git show`), no PR file is executed here;
 #   * a PR that touches the validator, schema, workflows or CI requirements together with marketplace.json is refused
-#     (scripts/check_scope.py): change the gate in one PR, the index in the next.
+#     (scripts/check_scope.py): change the gate in one PR, the index in the next. Exceptions: the develop -> main
+#     promotion PR (every develop PR was checked on its own) and the re-sign PR (index-resign-*), which may change
+#     marketplace.json only, must be one github-actions commit, and must verify with the pinned public keys.
+# The check name `index` is only trustworthy with the repository settings of README.md ("Owner settings"): strict
+# up-to-date branches and code-owner review of .github/**. tests/test_ci_gate.py pins that no other workflow has a job `index`.
 # push (develop, main): the merged code validates itself. There is deliberately NO workflow_dispatch (or any other
 # manual) trigger: a run started from another branch would use that branch's copy of this file.
 on:
@@ -22,17 +26,23 @@ jobs:
       - name: Check out the trusted tree (base branch tip), never the pull request
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.base.sha || github.sha }}
+          # github.sha is the tip of the base branch for pull_request_target (the same commit this workflow file comes from),
+          # and the pushed commit for push. Never the PR head, never an old payload sha.
+          ref: ${{ github.sha }}
           fetch-depth: 0
+          persist-credentials: false
       - uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5.3.0
         with:
           python-version: "3.12"
-      - run: pip install -r requirements-ci.txt
+      - run: pip install --require-hashes -r requirements-ci.txt
       - name: Work out base and head
         env:
           EVENT: ${{ github.event_name }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          THIS_REPO: ${{ github.repository }}
           PR_HEAD: ${{ github.event.pull_request.head.sha }}
           PUSH_BEFORE: ${{ github.event.before }}
         run: |
@@ -42,7 +52,16 @@ jobs:
               git fetch --no-tags origin "refs/pull/${PR_NUMBER}/head"
               head=$(git rev-parse FETCH_HEAD)
               [ "$head" = "$PR_HEAD" ] || { echo "the PR head moved while the check started; rerun"; exit 1; }
-              base="$PR_BASE"; scope="--base $base --head $head" ;;
+              base=$(git rev-parse HEAD)  # the tip of the base branch, which also defines this workflow file
+              scope="--base $base --head $head"
+              if [ "$PR_HEAD_REPO" = "$THIS_REPO" ]; then
+                # develop -> main promotion: every develop PR was checked on its own, so the combined set is not refused
+                if [ "$PR_BASE_REF" = "main" ] && [ "$PR_HEAD_REF" = "develop" ]; then scope="$scope --promotion"; fi
+                # the re-sign PR made by the sign-index workflow: marketplace.json only, one bot commit, signature checked below
+                if printf '%s' "$PR_HEAD_REF" | grep -Eq '^index-resign-[0-9]+$'; then
+                  scope="$scope --only marketplace.json"; echo "RESIGN=1" >> "$GITHUB_ENV"
+                fi
+              fi ;;
             *)
               head=$(git rev-parse HEAD); base="$PUSH_BEFORE"; scope="" ;;
           esac
@@ -52,6 +71,18 @@ jobs:
       - name: Refuse a PR that changes the gate and the index together
         if: env.SCOPE_ARGS != ''
         run: python -I scripts/check_scope.py $SCOPE_ARGS
+      - name: Re-sign PR - one commit by github-actions, and the signature verifies with the pinned public keys
+        if: env.RESIGN == '1'
+        env:
+          PUBS: ${{ vars.ORCH_MARKET_INDEX_PUBS }}
+        run: |
+          set -eu
+          [ -n "$PUBS" ] || { echo "ORCH_MARKET_INDEX_PUBS is not set"; exit 1; }
+          [ "$(git rev-list --count "$BASE..$HEAD_SHA")" = "1" ] || { echo "a re-sign PR must be exactly one commit"; exit 1; }
+          [ "$(git log -1 --format=%ae "$HEAD_SHA")" = "41898282+github-actions[bot]@users.noreply.github.com" ] \
+            || { echo "the commit is not by github-actions[bot]"; exit 1; }
+          git show "$HEAD_SHA:marketplace.json" > "$RUNNER_TEMP/resign-index.json"
+          python -I scripts/sign-index --verify-only --pub "$PUBS" --index "$RUNNER_TEMP/resign-index.json"
       - name: Validate the index of the head with the trusted validator
         run: |
           set -eu
