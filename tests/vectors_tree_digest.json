@@ -1,0 +1,49 @@
+{
+ "comment": "A git tree and the package digest it must give (spec 8.1). The tree is built with git plumbing; 'dir' is the package directory inside the repository. orch-marketplace tests/test_tree_digest.py builds each tree and checks both the digest and the file list; orch-core can run the same cases.",
+ "cases": [
+  {
+   "name": "top_level",
+   "dir": null,
+   "files": [
+    {
+     "path": "orch-addon.json",
+     "mode": "100644",
+     "text": "{}"
+    },
+    {
+     "path": "a/b.txt",
+     "mode": "100644",
+     "text": "x"
+    }
+   ],
+   "digest": "sha256:3f8e89e323846e8e54e539550c34b536d78eb959ee4db7d925211a4931d7e897"
+  },
+  {
+   "name": "subdir_with_exec_and_depth",
+   "dir": "pkg",
+   "files": [
+    {
+     "path": "orch-addon.json",
+     "mode": "100644",
+     "text": "{\"name\":\"demo\"}\n"
+    },
+    {
+     "path": "main.py",
+     "mode": "100644",
+     "text": "print('hi')\n"
+    },
+    {
+     "path": "lib/util.py",
+     "mode": "100755",
+     "text": "X = 1\n"
+    },
+    {
+     "path": "lib/deep/z.txt",
+     "mode": "100644",
+     "text": "z"
+    }
+   ],
+   "digest": "sha256:dedc91e88ac9481333646b8735c6c788a6a84ac7ecdba8cd5dd44bb41be5df8b"
+  }
+ ]
+}
