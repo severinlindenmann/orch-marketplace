@@ -22,6 +22,7 @@ import ipaddress
 import json
 import os
 import re
+import signal
 import socket
 import subprocess
 import sys
@@ -354,13 +355,21 @@ def _git(args: list[str], cwd: str, env: dict[str, str], *, timeout: int = _FETC
     argv = ["git", *args]
     if max_file is not None:
         argv = [sys.executable, "-I", "-c", _TRAMPOLINE, str(max_file), *argv]
+    # own process group: on a timeout the whole group (git-remote-https, index-pack ...) is killed, not only git
+    proc = subprocess.Popen(argv, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            start_new_session=True)  # fmt: skip
     try:
-        r = subprocess.run(argv, cwd=cwd, env=env, capture_output=True, timeout=timeout, check=False)
+        out, err = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except OSError:
+            pass
+        proc.communicate()
         raise Invalid("market.fetch_failed: git timed out") from None
-    if r.returncode != 0:
-        raise Invalid(f"market.fetch_failed: git {args[0]} failed: {r.stderr.decode(errors='replace')[:200].strip()}")
-    return r.stdout
+    if proc.returncode != 0:
+        raise Invalid(f"market.fetch_failed: git {args[0]} failed: {err.decode(errors='replace')[:200].strip()}")
+    return out
 
 
 # ----------------------------------------------------------------------------------------------- address check
@@ -416,9 +425,16 @@ def resolve_host(host: str, timeout: float = _RESOLVE_SECONDS) -> list[str]:
 def pin_address(url: str) -> dict[str, str]:
     """Environment entries that make git connect to the first judged address of the URL's host and nowhere else
     (``http.curloptResolve``; the config goes in through ``GIT_CONFIG_COUNT`` so every git call of the entry has it)."""
-    host = urlsplit(url).hostname
-    if urlsplit(url).scheme != "https" or not host:
-        raise Invalid("market.address_refused: not an https URL with a host name")
+    parts = urlsplit(url)
+    host = parts.hostname
+    if parts.scheme != "https" or not host or parts.username is not None or parts.password is not None:
+        raise Invalid("market.address_refused: not an https URL with a host name and no credentials")
+    try:
+        port = parts.port
+    except ValueError:
+        port = -1
+    if port is not None:
+        raise Invalid("market.address_refused: the URL names a port (only 443 is pinned)")
     addr = resolve_host(host)[0]
     shown = f"[{addr}]" if ":" in addr else addr
     return {"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "http.curloptResolve",
@@ -429,6 +445,10 @@ FETCH_SETTINGS = [
     "-c", "protocol.allow=never", "-c", "protocol.https.allow=always", "-c", "http.followRedirects=false",
     "-c", "transfer.fsckObjects=true", "-c", "fetch.fsckObjects=true", "-c", "core.hooksPath=/dev/null",
     "-c", "core.symlinks=false", "-c", "submodule.recurse=false",
+    # everything a fetch brings lands in ONE pack: below the default 100 objects git unpacks into loose files, and
+    # RLIMIT_FSIZE caps each file, not the total. With one pack the cap is the total.
+    "-c", "fetch.unpackLimit=1", "-c", "transfer.unpackLimit=1",
+    "-c", "http.lowSpeedLimit=1000", "-c", "http.lowSpeedTime=30",
 ]  # fmt: skip
 
 
@@ -687,12 +707,23 @@ def check_manifest(entry: dict[str, Any], manifest_bytes: bytes) -> None:
     check_api_1_1(m)
 
 
+MIN_GIT = (2, 37)  # http.curloptResolve (an older git ignores the key, which would switch the address pin off)
+
+
+def require_git(env: dict[str, str]) -> None:
+    out = _git(["--version"], ".", env).decode()
+    m = re.match(r"git version (\d+)\.(\d+)", out)
+    if m is None or (int(m.group(1)), int(m.group(2))) < MIN_GIT:
+        raise Invalid(f"market.fetch_failed: git {MIN_GIT[0]}.{MIN_GIT[1]} or newer is required")
+
+
 def check_entry(entry: dict[str, Any], fetch=fetch_commit, reach=ensure_reachable, pin=pin_address) -> None:
     """Address check, fetch, export, digest, manifest. Raises :class:`Invalid`. ``fetch``, ``reach`` and ``pin`` are
     replaceable for tests."""
     home = tempfile.mkdtemp(prefix="mk-validate-")
     try:
         env = {**git_env(home), **pin(entry["source"]["git"])}
+        require_git(env)
         repo = os.path.join(home, "repo")
         os.mkdir(repo)
         fetch(entry["source"]["git"], entry["commit"], repo, env)

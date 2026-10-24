@@ -233,3 +233,122 @@ def test_a_pin_that_differs_from_any_ref_is_a_rollback():
     b = index([entry(version="1.0.0", commit="b" * 40)], version=1)  # two refs disagree
     assert any("another pin" in p for p in v.check_index(index([entry(version="1.0.0", commit="a" * 40)], version=2), history=[a, b]))
     assert any("another pin" in p for p in v.check_index(index([entry(version="1.0.0", commit="b" * 40)], version=2), history=[a, b]))
+
+
+# ----- review of #16: F1 the cap is the total (one pack), F2 git version, F3 URL shape, F4 process group
+
+
+def _env(tmp_path):
+    return {"PATH": os.environ["PATH"], "HOME": str(tmp_path), "GIT_CONFIG_GLOBAL": "/dev/null",
+            "GIT_CONFIG_SYSTEM": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1"}  # fmt: skip
+
+
+def _source_with_blobs(tmp_path, n, size):
+    src = tmp_path / "src"
+    src.mkdir()
+    env = _env(tmp_path)
+    ident = ["-c", "user.name=t", "-c", "user.email=t@t"]
+    v._git(["init", "-q", "--template=", "-b", "main"], str(src), env)
+    for i in range(n):
+        (src / f"b{i}").write_bytes(os.urandom(size))
+    v._git([*ident, "add", "-A"], str(src), env)
+    v._git([*ident, "commit", "-qm", "blobs"], str(src), env)
+    return src, v._git(["rev-parse", "HEAD"], str(src), env).decode().strip()
+
+
+def _without(settings, *keys):
+    out, i = [], 0
+    while i < len(settings):
+        if settings[i] == "-c" and any(k in settings[i + 1] for k in keys):
+            i += 2
+            continue
+        out.append(settings[i])
+        i += 1
+    return out
+
+
+def _fetch_into(tmp_path, src, commit, cap, settings=None):
+    settings = v.FETCH_SETTINGS if settings is None else settings
+    dest = tmp_path / "dest"
+    dest.mkdir()
+    env = _env(tmp_path)
+    v._git(["init", "-q", "--template="], str(dest), env)
+    # the real fetch settings (https-only is relaxed for the local file source only), the real cap
+    v._git([*settings, "-c", "protocol.file.allow=always", "fetch", "-q", "--depth", "1", "--no-tags",
+            f"file://{src}", commit], str(dest), env, max_file=cap)  # fmt: skip
+    return dest
+
+
+def test_several_blobs_each_under_the_cap_but_together_over_it_fail_the_fetch(tmp_path):
+    src, commit = _source_with_blobs(tmp_path, 5, 1 << 20)  # 5 MiB of incompressible blobs, fewer than 100 objects
+    with pytest.raises(v.Invalid, match="fetch_failed"):
+        _fetch_into(tmp_path, src, commit, 3 << 20)  # each blob is under 3 MiB; the total is not
+
+
+def test_the_unpack_limit_settings_are_what_makes_the_cap_a_total(tmp_path):
+    """Isolates the mechanism from git's fsck behaviour: with fsck off, a small fetch is unpacked into loose files and
+    slips under a per-file cap; with the unpack limits of FETCH_SETTINGS it cannot."""
+    no_fsck = _without(v.FETCH_SETTINGS, "fsckObjects")
+    no_limits = _without(no_fsck, "unpackLimit")
+    src, commit = _source_with_blobs(tmp_path, 5, 1 << 20)
+    dest = _fetch_into(tmp_path, src, commit, 3 << 20, no_limits)  # the hazard: 5 MiB written, nothing refused
+    assert [d for d in (dest / ".git" / "objects").iterdir() if len(d.name) == 2]
+    other = tmp_path / "second"
+    other.mkdir()
+    src2, commit2 = _source_with_blobs(other, 5, 1 << 20)
+    with pytest.raises(v.Invalid, match="fetch_failed"):
+        _fetch_into(other, src2, commit2, 3 << 20, no_fsck)
+
+
+def test_the_same_fetch_passes_under_a_cap_above_the_total(tmp_path):
+    src, commit = _source_with_blobs(tmp_path, 5, 1 << 20)
+    dest = _fetch_into(tmp_path, src, commit, 16 << 20)
+    packs = list((dest / ".git" / "objects" / "pack").glob("*.pack"))
+    assert len(packs) == 1 and not [d for d in (dest / ".git" / "objects").iterdir() if len(d.name) == 2]
+
+
+def test_the_fetch_settings_force_one_pack():
+    s = " ".join(v.FETCH_SETTINGS)
+    assert "fetch.unpackLimit=1" in s and "transfer.unpackLimit=1" in s
+
+
+def test_an_old_git_is_refused(monkeypatch):
+    monkeypatch.setattr(v, "_git", lambda *a, **k: b"git version 2.36.1\n")
+    with pytest.raises(v.Invalid, match="2.37"):
+        v.require_git({})
+    monkeypatch.setattr(v, "_git", lambda *a, **k: b"git version 2.37.0\n")
+    v.require_git({})
+    monkeypatch.setattr(v, "_git", lambda *a, **k: b"git version 3.0.0\n")
+    v.require_git({})
+
+
+@pytest.mark.parametrize("url", ["https://github.com:8443/a/b", "https://u@github.com/a/b",
+                                 "https://u:p@github.com/a/b", "https://github.com:99999/a/b"])  # fmt: skip
+def test_pin_address_refuses_a_port_or_credentials_itself(url, monkeypatch):
+    monkeypatch.setattr(v, "resolve_host", lambda host, timeout=0: ["140.82.112.3"])
+    with pytest.raises(v.Invalid, match="address_refused"):
+        v.pin_address(url)
+
+
+def test_a_timeout_kills_the_whole_process_group(tmp_path):
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    pidfile = tmp_path / "child.pid"
+    fake = bindir / "git"
+    fake.write_text(f"#!/bin/sh\nsleep 60 &\necho $! > {pidfile}\nsleep 60\n")
+    fake.chmod(0o755)
+    env = {"PATH": f"{bindir}:/usr/bin:/bin"}
+    import time
+
+    with pytest.raises(v.Invalid, match="timed out"):
+        v._git(["fetch"], str(tmp_path), env, timeout=1)
+    pid = int(pidfile.read_text())
+    for _ in range(50):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.1)
+    else:
+        os.kill(pid, 9)  # clean up our own child, then fail
+        pytest.fail("the child of git survived the timeout")
