@@ -1,2 +1,9 @@
 # Only the owner approves changes to main (spec D33). develop and feature branches are the bot's.
 * @severinlindenmann
+# The gate and everything it runs: changing any of these needs the owner's review (M#2), also on develop.
+/.github/ @severinlindenmann
+/scripts/ @severinlindenmann
+/schema/ @severinlindenmann
+/requirements-ci.txt @severinlindenmann
+/requirements-sign.txt @severinlindenmann
+/marketplace.json @severinlindenmann

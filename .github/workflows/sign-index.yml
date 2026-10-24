@@ -1,0 +1,108 @@
+name: sign-index
+# Signs marketplace.json with the official index key (M#3, spec 3.1) and proposes the result as a pull request.
+#   * runs on main only, in the Environment `index-signing` (deployment branch: main), which holds the secret
+#     ORCH_MARKET_INDEX_KEY. The public halves are the REPOSITORY variable ORCH_MARKET_INDEX_PUBS (not an Environment one:
+#     the gate, ci.yml, reads it too, to verify re-sign PRs);
+#   * triggers: a change of marketplace.json on main, a daily check (re-signs when fewer than 10 days remain), manual;
+#   * the result is NEVER pushed to main: it goes to a new branch and a pull request, and the owner merges it.
+# Why a PR and not a bot commit to main: the key can then only ever produce a file the owner has looked at, main keeps
+# its protection (no bypass actor), and the diff shows exactly expires_at / version / publisher / signature.
+# A PR opened with GITHUB_TOKEN starts no checks: the owner closes and reopens it once to run the required `index` check.
+on:
+  push:
+    branches: [main]
+    paths: [marketplace.json]
+  schedule:
+    - cron: "17 5 * * *"
+  workflow_dispatch:
+concurrency:
+  group: sign-index
+  cancel-in-progress: false
+permissions:
+  contents: read
+jobs:
+  sign:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: index-signing
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+      - name: This run must be the tip of main, defined by main's own workflow file
+        env:
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+        run: |
+          set -eu
+          git fetch --no-tags origin main
+          tip=$(git rev-parse origin/main)
+          [ "$(git rev-parse HEAD)" = "$tip" ] || { echo "main moved since this run started; the next run signs"; exit 1; }
+          [ "$WORKFLOW_SHA" = "$tip" ] || { echo "the workflow definition is not main's tip; refusing to sign"; exit 1; }
+      - uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5.3.0
+        with:
+          python-version: "3.12"
+      - run: pip install --require-hashes -r requirements-sign.txt
+      - name: Sign (only this step sees the key)
+        env:
+          ORCH_MARKET_INDEX_KEY: ${{ secrets.ORCH_MARKET_INDEX_KEY }}
+          ORCH_MARKET_INDEX_PUBS: ${{ vars.ORCH_MARKET_INDEX_PUBS }}
+        run: |
+          set -eu
+          [ -n "$ORCH_MARKET_INDEX_PUBS" ] || { echo "ORCH_MARKET_INDEX_PUBS (the pinned public keys) is not set"; exit 1; }
+          python -I scripts/sign-index --if-needed --expect-pub "$ORCH_MARKET_INDEX_PUBS"
+      - name: Verify the result with main's validator and the pinned public keys
+        env:
+          ORCH_MARKET_INDEX_PUBS: ${{ vars.ORCH_MARKET_INDEX_PUBS }}
+        run: |
+          set -eu
+          python -I scripts/sign-index --verify-only --pub "$ORCH_MARKET_INDEX_PUBS"
+          python -I scripts/validate_index.py --official --fetch marketplace.json
+      - name: Open the pull request when the file changed
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+          ORCH_MARKET_INDEX_PUBS: ${{ vars.ORCH_MARKET_INDEX_PUBS }}
+        run: |
+          set -eu
+          if git diff --quiet -- marketplace.json; then echo "nothing to sign"; exit 0; fi
+          git diff --name-only | grep -qx marketplace.json && [ "$(git diff --name-only | wc -l)" -eq 1 ] || { echo "unexpected changes"; exit 1; }
+          # Only PRs this workflow created count: opened by the Actions bot, from a branch of this repo, named index-resign-*.
+          # (A title match would let anyone, a fork PR included, block re-signing until the index expires.)
+          open=$(gh pr list --state open --limit 100 --json number,headRefName,author,isCrossRepository \
+            --jq '[.[] | select(.author.login == "app/github-actions" and (.headRefName | startswith("index-resign-")) and (.isCrossRepository | not))] | length')
+          if [ "$open" != "0" ]; then
+            git show HEAD:marketplace.json > "$RUNNER_TEMP/current-index.json"
+            if python -I scripts/sign-index --verify-only --pub "$ORCH_MARKET_INDEX_PUBS" --min-days 10 --index "$RUNNER_TEMP/current-index.json"; then
+              echo "::notice::A re-sign pull request is already open; merge or close it."
+              exit 0
+            fi
+            echo "::error::A re-sign pull request is open but main's signature is invalid or expires within 10 days. Merge or close it now."
+            exit 1
+          fi
+          branch="index-resign-${RUN_ID}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$branch"
+          git commit -qam "chore(index): re-sign marketplace.json"
+          # the token goes through git's environment config, not through argv (visible in the process list)
+          export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="http.https://github.com/.extraheader"
+          export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')"
+          git push origin "$branch"
+          unset GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0
+          gh pr create --base main --head "$branch" --title "chore(index): re-sign marketplace.json" --body-file - <<'BODY'
+          Signed by the `sign-index` workflow in Environment `index-signing`. Only `expires_at`, `version`, entry `publisher`
+          signatures and `signature` may differ; the workflow asserted that before opening this PR.
+
+          Checks do not start on a PR opened by the Actions token: close and reopen this PR once, wait for the `index` check, then merge.
+          Hosts refuse an older index, so merge in order and never merge a re-sign over a newer index version.
+
+          After merging, bring main back into develop (otherwise the next develop -> main promotion fails "version lower"):
+
+              gh pr create --repo severinlindenmann/orch-marketplace --base develop --head main --title "chore: merge main (re-sign) back into develop" --body "Brings the signed index back; no other change."
+          BODY

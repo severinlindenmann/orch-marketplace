@@ -9,11 +9,11 @@ in orch-core; the schema is copied here as `schema/market.v1.json`.
 
 | Shelf | What is on it | Where it comes from |
 |---|---|---|
-| Built in | Tech-agnostic add-ons: dashboard, start agent, terminals, worktrees, wiki, widgets, schedules, explorer, usage, estimate, model routing, quick tasks, activity, publish | shipped in orch core |
-| **Official marketplace (this repo)** | Tool-specific add-ons maintained by orch: GitHub, Landing, later Jira, Slack, ... | this index |
+| Built in | Tech-agnostic add-ons: dashboard, start agent, terminals, worktrees, wiki, widgets, schedules, explorer, usage, estimate, quick tasks, activity, publish | shipped in orch core |
+| **Official marketplace (this repo)** | Add-ons maintained by orch that are not tech-agnostic: Model routing (package `packages/model-routing`), later GitHub, Landing, Jira, Slack, ... | this index |
 | Other marketplaces | Any git repo with a `marketplace.json`, or a single add-on repo | refused until per-add-on OS-user isolation exists (#287) |
 
-The index is empty for now. GitHub and Landing move in with G6 (#924).
+The index is empty for now: `packages/model-routing` is in the tree, but its index entry waits for the signing key and workflow (M#3). GitHub and Landing follow (G6, #924).
 
 ## Installs are human-only
 
@@ -34,16 +34,36 @@ every change; a lower version than one already seen is a rollback and is refused
 `expires_at` and a signature by the official key pinned in core (spec 3.1); both are added by the release step, not
 by hand.
 
+Signing, the key script and the operator steps: [`docs/signing.md`](docs/signing.md).
+
 ## CI
 
-`.github/workflows/ci.yml` runs `scripts/validate_index.py --fetch` on every pull request and push:
+`.github/workflows/ci.yml` is the gate (check `index`). It runs on `pull_request_target`, so the workflow file, the
+validator and the schema all come from the **base** branch; the pull request is only read as data
+(`git show <head>:marketplace.json`). A PR that changes the gate (`scripts/`, `schema/`, `.github/`, `requirements-*.txt`)
+and `marketplace.json` together is refused by `scripts/check_scope.py`: land the gate change first, the index change in a
+later PR. The gate runs `scripts/validate_index.py --fetch`:
 
 1. strict JSON, schema `schema/market.v1.json`, unique ids, sorted capabilities, canonical lower-case URLs, git host
    rule, rollback against the base branch's index;
 2. for every entry: fetch the pinned commit (isolated git environment, no checkout, plumbing only), judge the tree
    by the package rules, recompute `package_sha256` and compare, check the manifest agrees with the entry.
 
-Run it locally: `pip install -r requirements-ci.txt && python -m pytest -q tests && python scripts/validate_index.py --fetch`.
+`.github/workflows/tests.yml` runs the repository's own tests on the PR's code (`pull_request`, read-only token). It is a
+quality check, not the gate. Run both locally: `pip install -r requirements-ci.txt && python -m pytest -q tests && python scripts/validate_index.py --fetch`.
+
+Owner settings (all load-bearing; the check name `index` alone proves nothing, because a PR can add a workflow with a job of
+that name):
+- require the check `index` on `develop` and `main`;
+- enforce code-owner review (CODEOWNERS covers the gate files). Keep it on even if "Allow GitHub Actions to create and
+  approve pull requests" is enabled: an Actions approval must never be enough;
+- **require branches to be up to date** (`strict_required_status_checks_policy`). Without it a branch whose merge base
+  predates this gate still carries the old `ci.yml` (a job `index` that runs the PR's own validator), and no `.github`
+  change would show up in `base...head`;
+- the repository variable `ORCH_MARKET_INDEX_PUBS` (public keys, comma separated) is read by the gate for re-sign PRs.
+
+Special PRs: develop -> main promotion (same repo) may combine gate and index changes, since each develop PR was checked;
+a re-sign PR (`index-resign-<n>`, one github-actions commit) may change `marketplace.json` only and must verify with the pinned keys.
 
 ## Changing the index
 

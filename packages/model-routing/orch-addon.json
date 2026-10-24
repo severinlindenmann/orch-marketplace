@@ -1,0 +1,140 @@
+{
+  "schema": "orch.addon/3",
+  "name": "model-routing",
+  "version": "1.0.0",
+  "title": "Model routing",
+  "api": ">=1.1,<2",
+  "min_core": "2.0.0.dev0",
+  "entry": {
+    "cmd": [
+      "{python}",
+      "{pkg}/main.py"
+    ]
+  },
+  "capabilities": [
+    "choose_model"
+  ],
+  "settings": {
+    "title": "Model routing",
+    "schema": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "claude-code": {
+          "type": "object",
+          "title": "Claude Code",
+          "additionalProperties": false,
+          "properties": {
+            "work": {
+              "type": "string",
+              "title": "Work on a ticket",
+              "enum": [
+                "fable",
+                "opus",
+                "sonnet",
+                "haiku"
+              ]
+            },
+            "refine": {
+              "type": "string",
+              "title": "Refine a ticket",
+              "enum": [
+                "fable",
+                "opus",
+                "sonnet",
+                "haiku"
+              ]
+            },
+            "fix": {
+              "type": "string",
+              "title": "Fix a ticket",
+              "enum": [
+                "fable",
+                "opus",
+                "sonnet",
+                "haiku"
+              ]
+            },
+            "continue": {
+              "type": "string",
+              "title": "Continue a ticket",
+              "enum": [
+                "fable",
+                "opus",
+                "sonnet",
+                "haiku"
+              ]
+            },
+            "context": {
+              "type": "string",
+              "title": "Read and answer",
+              "enum": [
+                "fable",
+                "opus",
+                "sonnet",
+                "haiku"
+              ]
+            }
+          }
+        },
+        "codex": {
+          "type": "object",
+          "title": "Codex",
+          "additionalProperties": false,
+          "properties": {
+            "work": {
+              "type": "string",
+              "title": "Work on a ticket",
+              "enum": [
+                "gpt-5.4",
+                "gpt-5-codex",
+                "gpt-5",
+                "o3"
+              ]
+            },
+            "refine": {
+              "type": "string",
+              "title": "Refine a ticket",
+              "enum": [
+                "gpt-5.4",
+                "gpt-5-codex",
+                "gpt-5",
+                "o3"
+              ]
+            },
+            "fix": {
+              "type": "string",
+              "title": "Fix a ticket",
+              "enum": [
+                "gpt-5.4",
+                "gpt-5-codex",
+                "gpt-5",
+                "o3"
+              ]
+            },
+            "continue": {
+              "type": "string",
+              "title": "Continue a ticket",
+              "enum": [
+                "gpt-5.4",
+                "gpt-5-codex",
+                "gpt-5",
+                "o3"
+              ]
+            },
+            "context": {
+              "type": "string",
+              "title": "Read and answer",
+              "enum": [
+                "gpt-5.4",
+                "gpt-5-codex",
+                "gpt-5",
+                "o3"
+              ]
+            }
+          }
+        }
+      }
+    }
+  }
+}
