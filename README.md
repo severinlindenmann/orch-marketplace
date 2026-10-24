@@ -9,11 +9,11 @@ in orch-core; the schema is copied here as `schema/market.v1.json`.
 
 | Shelf | What is on it | Where it comes from |
 |---|---|---|
-| Built in | Tech-agnostic add-ons: dashboard, start agent, terminals, worktrees, wiki, widgets, schedules, explorer, usage, estimate, model routing, quick tasks, activity, publish | shipped in orch core |
-| **Official marketplace (this repo)** | Tool-specific add-ons maintained by orch: GitHub, Landing, later Jira, Slack, ... | this index |
+| Built in | Tech-agnostic add-ons: dashboard, start agent, terminals, worktrees, wiki, widgets, schedules, explorer, usage, estimate, quick tasks, activity, publish | shipped in orch core |
+| **Official marketplace (this repo)** | Add-ons maintained by orch that are not tech-agnostic: Model routing (package `packages/model-routing`), later GitHub, Landing, Jira, Slack, ... | this index |
 | Other marketplaces | Any git repo with a `marketplace.json`, or a single add-on repo | refused until per-add-on OS-user isolation exists (#287) |
 
-The index is empty for now. GitHub and Landing move in with G6 (#924).
+The index is empty for now: `packages/model-routing` is in the tree, but its index entry waits for the signing key and workflow (M#3). GitHub and Landing follow (G6, #924).
 
 ## Installs are human-only
 
