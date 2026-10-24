@@ -50,8 +50,18 @@ later PR. The gate runs `scripts/validate_index.py --fetch`:
 `.github/workflows/tests.yml` runs the repository's own tests on the PR's code (`pull_request`, read-only token). It is a
 quality check, not the gate. Run both locally: `pip install -r requirements-ci.txt && python -m pytest -q tests && python scripts/validate_index.py --fetch`.
 
-Owner settings: require the check `index` on `develop` and `main`, enforce code-owner review (CODEOWNERS covers the gate
-files), and turn on "require branches to be up to date".
+Owner settings (all load-bearing; the check name `index` alone proves nothing, because a PR can add a workflow with a job of
+that name):
+- require the check `index` on `develop` and `main`;
+- enforce code-owner review (CODEOWNERS covers the gate files). Keep it on even if "Allow GitHub Actions to create and
+  approve pull requests" is enabled: an Actions approval must never be enough;
+- **require branches to be up to date** (`strict_required_status_checks_policy`). Without it a branch whose merge base
+  predates this gate still carries the old `ci.yml` (a job `index` that runs the PR's own validator), and no `.github`
+  change would show up in `base...head`;
+- the repository variable `ORCH_MARKET_INDEX_PUBS` (public keys, comma separated) is read by the gate for re-sign PRs.
+
+Special PRs: develop -> main promotion (same repo) may combine gate and index changes, since each develop PR was checked;
+a re-sign PR (`index-resign-<n>`, one github-actions commit) may change `marketplace.json` only and must verify with the pinned keys.
 
 ## Changing the index
 

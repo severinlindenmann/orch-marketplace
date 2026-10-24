@@ -4,9 +4,11 @@
 The gate is everything that decides whether an index is valid: the validator, the schema, the workflows and the CI
 requirements. CI runs this script from the BASE branch (so the PR cannot change it) on the PR's file list.
 
-    check_scope.py --base SHA --head SHA [--only PATH]
+    check_scope.py --base SHA --head SHA [--only PATH | --promotion]
 
-``--only PATH`` is for the signing branch: it may change that one file and nothing else.
+``--only PATH`` is for the re-sign branch: it may change that one file and nothing else.
+``--promotion`` is for the develop -> main PR (the workflow decides: same repository, base main, head develop): every
+develop PR was checked on its own, so the combined change set is not refused.
 Exit 0 = fine, 1 = refused (reasons on stdout).
 """
 
@@ -25,8 +27,10 @@ def is_gate(path: str) -> bool:
     return path.startswith(GATE_PREFIXES) or path in GATE_FILES
 
 
-def judge(changed: list[str], only: str | None = None) -> list[str]:
+def judge(changed: list[str], only: str | None = None, promotion: bool = False) -> list[str]:
     """The reasons to refuse a change set (empty = allowed)."""
+    if promotion and only is None:
+        return []
     if only is not None:
         extra = sorted(p for p in changed if p != only)
         return [f"this branch may change only {only}, but also changes: {', '.join(extra)}"] if extra else []
@@ -49,13 +53,14 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--base", required=True)
     ap.add_argument("--head", required=True)
     ap.add_argument("--only")
+    ap.add_argument("--promotion", action="store_true")
     a = ap.parse_args(argv)
     try:
         files = changed_files(a.base, a.head)
     except subprocess.CalledProcessError as e:
         print(f"FAIL cannot list the changed files: {e}")
         return 1
-    problems = judge(files, a.only)
+    problems = judge(files, a.only, a.promotion)
     for p in problems:
         print(f"FAIL scope: {p}")
     if not problems:
