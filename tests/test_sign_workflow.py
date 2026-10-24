@@ -68,3 +68,21 @@ def test_changes_other_than_the_index_stop_the_job():
 def test_no_event_text_is_interpolated_into_scripts():
     for block in re.findall(r"^\s+run: \|\n((?:\s{10,}.*\n)+)", WF, re.M):
         assert "${{" not in block
+
+
+def test_only_prs_made_by_this_workflow_block_a_re_sign():
+    """A title match would let anyone (a fork PR too) block re-signing until the index expires."""
+    step = WF.split("- name: Open the pull request when the file changed")[1]
+    assert "in:title" not in step and "--search" not in step
+    assert "--json number,headRefName,author,isCrossRepository" in step
+    assert '.author.login == "app/github-actions"' in step
+    assert 'startswith("index-resign-")' in step
+    assert "(.isCrossRepository | not)" in step
+
+
+def test_skipping_because_a_pr_is_open_fails_visibly_when_the_signature_is_running_out():
+    step = WF.split("- name: Open the pull request when the file changed")[1]
+    assert "--verify-only" in step and "--min-days 10" in step
+    assert "::error::" in step and "::notice::" in step
+    assert re.search(r"::error::[^\n]*\n\s+exit 1", step)
+    assert "git show HEAD:marketplace.json" in step  # the signature on main, not the one just made
