@@ -120,3 +120,5 @@ gh pr create --repo severinlindenmann/orch-marketplace --base develop --head mai
 `next.key` is the second pinned key. Rotation (entries re-keyed, hosts accepting a known-key change) is not built:
 `sign-index` refuses to overwrite an entry `publisher` made by a different key, and core's install TOFU would raise
 `market.publisher_key_changed`. It is tracked as a core issue; do not rotate before it is done.
+
+Last reviewed: 24 Oct 2026 (V3-D39).
