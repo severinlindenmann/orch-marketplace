@@ -18,12 +18,16 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import ipaddress
 import json
 import os
 import re
+import signal
+import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unicodedata
 from pathlib import Path
@@ -153,41 +157,73 @@ def check_index(doc: Any, *, previous: Any = None, official: bool = False, now: 
 
 
 def _history(doc: dict[str, Any], docs: list[dict[str, Any]]) -> list[str]:
-    """Append-only history: every (id, version) ever listed keeps its pin, and an id never goes below the highest
-    version ever listed, so dropping an id and re-adding it cannot change a published pin or roll it back."""
-    pins: dict[tuple[str, str], tuple[Any, Any, Any]] = {}
+    """Append-only history: every (id, version) ever listed keeps its pin, an id never goes below the highest version
+    ever listed, and every revocation ever published stays, so dropping an id and re-adding it cannot change a
+    published pin, roll it back or lift a revocation. ``docs`` may come from several refs; a pin counts as changed if
+    it differs from ANY historic pin of that (id, version)."""
+    pins: dict[tuple[str, str], list[tuple[Any, Any, Any]]] = {}
     floor: dict[str, str] = {}
+    revoked: set[str] = set()
     for old in docs:
+        revoked.update(old.get("revoked", []))
         for e in old.get("addons", []):
-            key = (e["id"], e["version"])
-            pins.setdefault(key, (e["commit"], e["package_sha256"], e["source"]))
+            pin = (e["commit"], e["package_sha256"], e["source"])
+            known = pins.setdefault((e["id"], e["version"]), [])
+            if pin not in known:
+                known.append(pin)
             if e["id"] not in floor or _semver(e["version"]) > _semver(floor[e["id"]]):
                 floor[e["id"]] = e["version"]
     out = []
+    dropped = sorted(revoked - set(doc.get("revoked", [])))
+    if dropped:
+        out.append(f"market.rollback: revocation dropped from the history: {', '.join(dropped)}")
     for e in doc["addons"]:
-        pin = pins.get((e["id"], e["version"]))
-        if pin is not None and pin != (e["commit"], e["package_sha256"], e["source"]):
+        if f"{e['id']}@{e['version']}" in revoked:
+            out.append(f"market.revoked: {e['id']}@{e['version']} was revoked in the history and cannot be listed")
+        if any(p != (e["commit"], e["package_sha256"], e["source"]) for p in pins.get((e["id"], e["version"]), [])):
             out.append(f"market.rollback: {e['id']} {e['version']} was published with another pin in the history")
         if e["id"] in floor and _semver(e["version"]) < _semver(floor[e["id"]]):
             out.append(f"market.rollback: {e['id']} {e['version']} is below {floor[e['id']]}, listed before")
     return out
 
 
+_HISTORY_ENTRY = {"id": str, "version": str, "commit": str, "package_sha256": str, "source": dict}
+
+
+def _history_shape(doc: Any) -> None:
+    """The history code reads these fields of every historic entry; a historic file that parses as JSON but lacks
+    them is a clean :class:`Invalid`, never a traceback."""
+    ok = isinstance(doc, dict) and isinstance(doc.get("addons"), list)
+    revoked = doc.get("revoked", []) if ok else []
+    ok = ok and isinstance(revoked, list) and all(isinstance(r, str) for r in revoked)
+    for e in doc["addons"] if ok else []:
+        ok = ok and isinstance(e, dict) and all(isinstance(e.get(k), t) for k, t in _HISTORY_ENTRY.items())
+        ok = ok and re.fullmatch(r"[0-9]+(\.[0-9]+)*", e["version"]) is not None
+        if not ok:
+            break
+    if not ok:
+        raise Invalid("not a valid index (addons, revoked or an entry has the wrong shape)")
+
+
 def history_from_git(ref: str, path: str = "marketplace.json", cwd: str = ".") -> list[dict[str, Any]]:
-    """Every version of ``path`` on the first-parent history of ``ref`` (oldest first), parsed strictly."""
+    """Every version of ``path`` on the first-parent history of ``ref`` (oldest first), parsed strictly. A shallow
+    repository is refused (its history is cut, so the record would silently be incomplete). Only a commit that DELETED
+    the file is skipped; any other failure to read it is an error."""
     env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "GIT_CONFIG_GLOBAL": "/dev/null",
            "GIT_CONFIG_SYSTEM": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1"}  # fmt: skip
+    if _git(["rev-parse", "--is-shallow-repository"], cwd, env).decode().strip() != "false":
+        raise Invalid("market.history_incomplete: the repository is shallow; fetch the full history (fetch-depth: 0)")
     shas = _git(["log", "--first-parent", "--reverse", "--format=%H", ref, "--", path], cwd, env).decode().split()
     docs = []
     for sha in shas:
-        try:
-            raw = _git(["show", f"{sha}:{path}"], cwd, env).decode()
-        except Invalid:
+        if not _git(["ls-tree", "--name-only", sha, "--", path], cwd, env).strip():
             continue  # the commit deleted the file
         try:
-            docs.append(strict_loads(raw))
-        except Invalid as e:
+            doc = strict_loads(_git(["show", f"{sha}:{path}"], cwd, env).decode())
+            _history_shape(doc)
+        except (Invalid, UnicodeDecodeError) as e:
             raise Invalid(f"market.malformed: history {sha[:12]}: {e}") from None
+        docs.append(doc)
     return docs
 
 
@@ -248,11 +284,13 @@ def check_path(rel: str) -> None:
 
 
 def judge_listing(listing: list[tuple[str, str, int]]) -> None:
-    """``listing`` = (mode, path, size) from ``git ls-tree -r -l``. Judged before any blob is read (spec 5.1.1)."""
+    """``listing`` = (mode, path, size) from ``git ls-tree -r -l``. Judged before any blob is read (spec 5.1.1).
+    Like core (``orch.addons.package.check_listing``) the 256-entry limit counts files AND directories."""
     if len(listing) > MAX_FILES:
         raise Invalid("market.package_invalid: too many files")
     names: set[str] = set()
-    dirs: set[str] = set()
+    dirs: set[str] = set()  # the same directories core counts: every proper prefix of a path, case as written
+    folded_dirs: set[str] = set()
     total = 0
     for mode, path, size in listing:
         if mode not in ("100644", "100755"):
@@ -262,12 +300,19 @@ def judge_listing(listing: list[tuple[str, str, int]]) -> None:
         if folded in names:
             raise Invalid(f"market.package_invalid: {ascii(path)}: duplicate name after case folding")
         names.add(folded)
-        for i in range(1, len(path.split("/"))):
-            dirs.add(unicodedata.normalize("NFC", "/".join(path.split("/")[:i])).casefold())
+        parts = path.split("/")
+        for i in range(1, len(parts)):
+            prefix = "/".join(parts[:i])
+            dirs.add(prefix)
+            folded_dirs.add(unicodedata.normalize("NFC", prefix).casefold())
+        if size < 0:
+            raise Invalid(f"market.package_invalid: {ascii(path)}: negative size")
         if size > MAX_FILE_BYTES:
             raise Invalid(f"market.package_invalid: {ascii(path)}: larger than {MAX_FILE_BYTES} bytes")
         total += size
-    if names & dirs:
+    if len(listing) + len(dirs) > MAX_FILES:
+        raise Invalid(f"market.package_invalid: more than {MAX_FILES} files and directories")
+    if names & folded_dirs:
         raise Invalid("market.package_invalid: a name is both a file and a directory")
     if total > MAX_TOTAL_BYTES:
         raise Invalid("market.package_invalid: too many bytes in all")
@@ -292,20 +337,118 @@ def git_env(home: str) -> dict[str, str]:
     }
 
 
-def _git(args: list[str], cwd: str, env: dict[str, str], *, timeout: int = _FETCH_TIMEOUT) -> bytes:
+# Re-executes git with RLIMIT_FSIZE and no core dump (same fixed program text as core's gitsafe): a write past the limit
+# kills git, so a pack larger than the cap cannot fill the runner's disk. No operand is interpolated into the text.
+_TRAMPOLINE = (
+    "import os,resource,sys;n=int(sys.argv[1]);resource.setrlimit(resource.RLIMIT_FSIZE,(n,n));"
+    "resource.setrlimit(resource.RLIMIT_CORE,(0,0));os.execvp(sys.argv[2],sys.argv[2:])"
+)
+# an add-on's whole commit must fit: the package total of 8.1 plus a margin for tree objects and pack overhead (core:
+# gitsafe.MARKET_PACKAGE_PACK). The reachability fetch brings the branch and tag history of the named repo, so its cap
+# is larger; it still bounds what a hostile repo can make the runner download.
+PACK_CAP_COMMIT = MAX_TOTAL_BYTES + (8 << 20)
+PACK_CAP_HISTORY = 256 << 20
+
+
+def _git(args: list[str], cwd: str, env: dict[str, str], *, timeout: int = _FETCH_TIMEOUT,
+         max_file: int | None = None) -> bytes:  # fmt: skip
+    argv = ["git", *args]
+    if max_file is not None:
+        argv = [sys.executable, "-I", "-c", _TRAMPOLINE, str(max_file), *argv]
+    # own process group: on a timeout the whole group (git-remote-https, index-pack ...) is killed, not only git
+    proc = subprocess.Popen(argv, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            start_new_session=True)  # fmt: skip
     try:
-        r = subprocess.run(["git", *args], cwd=cwd, env=env, capture_output=True, timeout=timeout, check=False)
+        out, err = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except OSError:
+            pass
+        proc.communicate()
         raise Invalid("market.fetch_failed: git timed out") from None
-    if r.returncode != 0:
-        raise Invalid(f"market.fetch_failed: git {args[0]} failed: {r.stderr.decode(errors='replace')[:200].strip()}")
-    return r.stdout
+    if proc.returncode != 0:
+        raise Invalid(f"market.fetch_failed: git {args[0]} failed: {err.decode(errors='replace')[:200].strip()}")
+    return out
+
+
+# ----------------------------------------------------------------------------------------------- address check
+# Mirror of orch-core ``orch.market.address`` (vectors ``address_*``): IPv4 must be global unicast; IPv6 is an allow
+# list (2000::/3 minus 2001::/23, documentation, 6to4); IPv4-mapped is judged as the IPv4 address it carries. Every
+# address a name resolves to must pass, and git is told to connect to the first one (no second lookup).
+
+_V6_OK = ipaddress.ip_network("2000::/3")
+_V6_NO = tuple(ipaddress.ip_network(n) for n in ("2001::/23", "2001:db8::/32", "3fff::/20", "2002::/16"))
+_RESOLVE_SECONDS = 15.0
+
+
+def check_address(text: object) -> str:
+    """The address to connect to, or :class:`Invalid` (``market.address_refused``)."""
+    refused = Invalid("market.address_refused: the host resolves to an address that is not public")
+    if not isinstance(text, str) or "%" in text:
+        raise refused
+    try:
+        ip = ipaddress.ip_address(text)
+    except ValueError:
+        raise refused from None
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    if isinstance(ip, ipaddress.IPv4Address):
+        bad = ip.is_multicast or ip.is_reserved or ip.is_unspecified or ip.is_loopback or ip.is_link_local
+        if bad or not ip.is_global or ip == ipaddress.IPv4Address("255.255.255.255"):
+            raise refused
+        return str(ip)
+    if ip not in _V6_OK or any(ip in n for n in _V6_NO):
+        raise refused
+    return str(ip)
+
+
+def resolve_host(host: str, timeout: float = _RESOLVE_SECONDS) -> list[str]:
+    """Every address of ``host`` (port 443), sorted, each judged. No result, a timeout or one bad address is refused."""
+    box: list[list[str]] = []
+
+    def work() -> None:
+        try:
+            box.append(sorted({i[4][0] for i in socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)}))
+        except OSError:
+            box.append([])
+
+    t = threading.Thread(target=work, daemon=True)
+    t.start()
+    t.join(timeout)
+    found = box[0] if box and not t.is_alive() else []
+    if not found:
+        raise Invalid("market.fetch_failed: the host does not resolve")
+    return [check_address(a) for a in found]
+
+
+def pin_address(url: str) -> dict[str, str]:
+    """Environment entries that make git connect to the first judged address of the URL's host and nowhere else
+    (``http.curloptResolve``; the config goes in through ``GIT_CONFIG_COUNT`` so every git call of the entry has it)."""
+    parts = urlsplit(url)
+    host = parts.hostname
+    if parts.scheme != "https" or not host or parts.username is not None or parts.password is not None:
+        raise Invalid("market.address_refused: not an https URL with a host name and no credentials")
+    try:
+        port = parts.port
+    except ValueError:
+        port = -1
+    if port is not None:
+        raise Invalid("market.address_refused: the URL names a port (only 443 is pinned)")
+    addr = resolve_host(host)[0]
+    shown = f"[{addr}]" if ":" in addr else addr
+    return {"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "http.curloptResolve",
+            "GIT_CONFIG_VALUE_0": f"{host}:443:{shown}"}  # fmt: skip
 
 
 FETCH_SETTINGS = [
     "-c", "protocol.allow=never", "-c", "protocol.https.allow=always", "-c", "http.followRedirects=false",
     "-c", "transfer.fsckObjects=true", "-c", "fetch.fsckObjects=true", "-c", "core.hooksPath=/dev/null",
     "-c", "core.symlinks=false", "-c", "submodule.recurse=false",
+    # everything a fetch brings lands in ONE pack: below the default 100 objects git unpacks into loose files, and
+    # RLIMIT_FSIZE caps each file, not the total. With one pack the cap is the total.
+    "-c", "fetch.unpackLimit=1", "-c", "transfer.unpackLimit=1",
+    "-c", "http.lowSpeedLimit=1000", "-c", "http.lowSpeedTime=30",
 ]  # fmt: skip
 
 
@@ -314,7 +457,7 @@ def fetch_commit(url: str, commit: str, repo: str, env: dict[str, str]) -> None:
     fmt = "sha1" if len(commit) == 40 else "sha256"
     _git(["init", "-q", "--template=", f"--object-format={fmt}", repo], repo, env)
     _git([*FETCH_SETTINGS, "fetch", "-q", "--depth", "1", "--no-tags", "--no-recurse-submodules", url, commit],
-         repo, env)  # fmt: skip
+         repo, env, max_file=PACK_CAP_COMMIT)  # fmt: skip
     if _git(["rev-parse", "FETCH_HEAD"], repo, env).decode().strip() != commit:
         raise Invalid("market.commit_mismatch: the fetched object is not the pinned commit")
 
@@ -324,7 +467,8 @@ def ensure_reachable(url: str, commit: str, repo: str, env: dict[str, str], extr
     from a branch or tag of the named repo: fetch its heads and tags and ask which of them contain the commit."""
     settings = [x for kv in extra for x in ("-c", kv)]
     _git([*FETCH_SETTINGS, *settings, "fetch", "-q", "--no-tags", "--no-recurse-submodules", url,
-          "+refs/heads/*:refs/remotes/origin/*", "+refs/tags/*:refs/tags/*"], repo, env, timeout=600)  # fmt: skip
+          "+refs/heads/*:refs/remotes/origin/*", "+refs/tags/*:refs/tags/*"], repo, env, timeout=600,
+         max_file=PACK_CAP_HISTORY)  # fmt: skip
     refs = _git(["for-each-ref", "--contains", commit, "--count=1", "--format=%(refname)",
                  "refs/remotes/origin", "refs/tags"], repo, env).strip()  # fmt: skip
     if not refs:
@@ -539,7 +683,43 @@ def check_api_1_1(m: dict[str, Any]) -> None:
         check_settings_schema(st["schema"])
 
 
-def check_manifest(entry: dict[str, Any], manifest_bytes: bytes) -> None:
+def _lockfile_module():
+    """Core's own lockfile parser (vendored byte-identical under ``scripts/vendor``, with a stub for the one name it
+    takes from core's ``orch.market``). Loaded on first use so that ``-I`` (no script directory on the path) works."""
+    vendor = str(Path(__file__).resolve().parent / "vendor")
+    if vendor not in sys.path:
+        sys.path.insert(0, vendor)
+    from orch.addons import lockfile  # noqa: PLC0415
+
+    return lockfile
+
+
+def check_lock(runtime: dict[str, Any], files: dict[str, bytes]) -> None:
+    """The lockfile a package declares (``runtime.lock``) is refused exactly as core refuses it, so that a bad entry is
+    caught before signing: ``market.lock_missing`` when the file is not in the package, otherwise core's own parser
+    (bounded: the lockfile byte and row caps of core apply; offline, pure). Raises :class:`Invalid`."""
+    lockfile = _lockfile_module()
+    data = files.get(runtime["lock"])
+    if data is None:
+        raise Invalid("market.lock_missing: the lockfile named by runtime.lock is not in the package")
+    try:
+        lockfile.check(runtime["kind"], data)
+    except lockfile.MarketError as e:  # only core's own verdict; an environment or code fault must crash the gate
+        raise Invalid(f"{e.code}: the lockfile is refused") from None
+
+
+# orch-core plugins/orch-core/src/orch/addons/manifest.py:133 (RUNTIME_COMMANDS) and :141-143 (_check_runtime)
+RUNTIME_COMMANDS = {"python-requirements": "{python}", "node-package-lock": "node"}
+
+
+def check_runtime_command(m: dict[str, Any]) -> None:
+    """Core's ``_check_runtime`` rule: the entry command starts with the interpreter the lock was made for."""
+    want = RUNTIME_COMMANDS[m["runtime"]["kind"]]
+    if m["entry"]["cmd"][0] != want:
+        raise Invalid(f"market.manifest_invalid: a {m['runtime']['kind']} add-on starts with {want!r}")
+
+
+def check_manifest(entry: dict[str, Any], manifest_bytes: bytes, files: dict[str, bytes] | None = None) -> None:
     try:
         m = strict_loads(manifest_bytes.decode())
     except (Invalid, UnicodeDecodeError) as e:
@@ -561,13 +741,28 @@ def check_manifest(entry: dict[str, Any], manifest_bytes: bytes) -> None:
         raise Invalid("market.manifest_mismatch: manifest runtime differs from the entry")
     check_manifest_schema(m)
     check_api_1_1(m)
+    if "runtime" in m:  # the schema has made it {kind, lock}
+        check_runtime_command(m)
+        check_lock(m["runtime"], files or {})
 
 
-def check_entry(entry: dict[str, Any], fetch=fetch_commit, reach=ensure_reachable) -> None:
-    """Fetch, export, digest, manifest. Raises :class:`Invalid`. ``fetch`` is replaceable for tests."""
+MIN_GIT = (2, 37)  # http.curloptResolve (an older git ignores the key, which would switch the address pin off)
+
+
+def require_git(env: dict[str, str]) -> None:
+    out = _git(["--version"], ".", env).decode()
+    m = re.match(r"git version (\d+)\.(\d+)", out)
+    if m is None or (int(m.group(1)), int(m.group(2))) < MIN_GIT:
+        raise Invalid(f"market.fetch_failed: git {MIN_GIT[0]}.{MIN_GIT[1]} or newer is required")
+
+
+def check_entry(entry: dict[str, Any], fetch=fetch_commit, reach=ensure_reachable, pin=pin_address) -> None:
+    """Address check, fetch, export, digest, manifest. Raises :class:`Invalid`. ``fetch``, ``reach`` and ``pin`` are
+    replaceable for tests."""
     home = tempfile.mkdtemp(prefix="mk-validate-")
     try:
-        env = git_env(home)
+        env = {**git_env(home), **pin(entry["source"]["git"])}
+        require_git(env)
         repo = os.path.join(home, "repo")
         os.mkdir(repo)
         fetch(entry["source"]["git"], entry["commit"], repo, env)
@@ -575,7 +770,7 @@ def check_entry(entry: dict[str, Any], fetch=fetch_commit, reach=ensure_reachabl
         files = export_package(repo, entry["commit"], entry["source"].get("subdir"), env)
         if package_digest(files) != entry["package_sha256"]:
             raise Invalid(f"market.digest_mismatch: computed {package_digest(files)}")
-        check_manifest(entry, files[MANIFEST_FILE])
+        check_manifest(entry, files[MANIFEST_FILE], files)
     finally:
         _rmtree(home)
 
@@ -593,7 +788,8 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("index", nargs="?", default="marketplace.json")
     ap.add_argument("--previous", help="the index on the base branch (rollback check)")
-    ap.add_argument("--history-ref", help="git ref whose first-parent history of the index is the append-only record")
+    ap.add_argument("--history-ref", action="append", default=[],
+                    help="git ref whose first-parent history of the index is the append-only record (repeatable)")
     ap.add_argument("--official", action="store_true", help="require expires_at and signature")
     ap.add_argument("--fetch", action="store_true", help="fetch every entry at its commit and compare the digest")
     ap.add_argument("--allow-host", action="append", default=[], help="extra git host (the core allow list)")
@@ -605,7 +801,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"FAIL {e}")
         return 1
     try:
-        hist = history_from_git(a.history_ref) if a.history_ref else None
+        hist = [d for r in a.history_ref for d in history_from_git(r)] if a.history_ref else None
     except Invalid as e:
         print(f"FAIL {e}")
         return 1

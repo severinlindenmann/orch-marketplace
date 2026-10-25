@@ -14,6 +14,7 @@ import validate_index as v  # noqa: E402
 
 CASES = [c for c in json.loads((Path(__file__).with_name("vectors_market.json")).read_text())["cases"]
          if c["check"] == "index"]  # fmt: skip
+ALL = json.loads((Path(__file__).with_name("vectors_market.json")).read_text())["cases"]
 SCHEMA = json.loads((Path(__file__).resolve().parent.parent / "schema" / "market.v1.json").read_text())
 
 # core refuses these in its installer with a more specific code; here the offline checker reports them as malformed
@@ -38,6 +39,143 @@ def test_core_index_vector(case):
             assert problems[0].startswith(code)
         elif code not in SAME_FAMILY:
             assert problems[0].startswith(code), problems
+
+
+# The vector kinds this validator answers. The rest are core-internal (install policy, environment tree and stamp)
+# and have no counterpart here; a NEW kind in a re-vendored file must be handled or listed on purpose.
+CORE_ONLY = {"install", "env_paths", "env_stamp"}
+
+
+def test_every_vector_kind_is_run_here_or_core_only():
+    assert {c["check"] for c in ALL} - CORE_ONLY == {"index", "tree", "address", "lock"}
+
+
+@pytest.mark.parametrize("case", [c for c in ALL if c["check"] == "lock"], ids=lambda c: c["name"])
+def test_core_lock_vector(case):
+    a = case["args"]
+    runtime = {"kind": a["kind"], "lock": "requirements.lock"}
+    files = {"requirements.lock": a["text"].encode()}
+    if "ok" in case["expect"]:
+        v.check_lock(runtime, files)
+    else:
+        with pytest.raises(v.Invalid) as ei:
+            v.check_lock(runtime, files)
+        assert str(ei.value).startswith(case["expect"]["refuse"])
+
+
+def test_a_package_whose_lockfile_is_missing_or_bad_is_refused_by_check_manifest():
+    good = "requests==2.32.3 --hash=sha256:" + "a" * 64 + "\n"
+    m = manifest(settings=SETTINGS, runtime={"kind": "python-requirements", "lock": "req.lock"})
+    e = {**_routing_entry(), "runtime": m["runtime"]}
+    raw = json.dumps(m).encode()
+    v.check_manifest(e, raw, {"req.lock": good.encode()})
+    with pytest.raises(v.Invalid, match="market.lock_missing"):
+        v.check_manifest(e, raw, {})
+    with pytest.raises(v.Invalid, match="market.lock_missing"):
+        v.check_manifest(e, raw)
+    with pytest.raises(v.Invalid, match="market.lock_invalid"):
+        v.check_manifest(e, raw, {"req.lock": b"requests>=2\n"})
+
+
+def _padded(n):
+    """A VALID python lock padded with a comment to exactly n bytes."""
+    base = "requests==2.32.3 --hash=sha256:" + "a" * 64 + "\n"
+    pad = n - len(base) - 2  # "#" + newline
+    return (base + "#" + "x" * pad + "\n").encode()
+
+
+def test_lockfile_byte_cap_is_core_s_one_mib():
+    runtime = {"kind": "python-requirements", "lock": "r"}
+    ok = _padded(1 << 20)
+    assert len(ok) == 1 << 20
+    v.check_lock(runtime, {"r": ok})
+    big = _padded((1 << 20) + 1)
+    assert len(big) == (1 << 20) + 1
+    with pytest.raises(v.Invalid, match="market.lock_invalid"):
+        v.check_lock(runtime, {"r": big})
+
+
+@pytest.mark.parametrize("path", ["../req.lock", "./req.lock", "/req.lock", "Req.lock", "orch-addon.json"])
+def test_only_the_exact_listed_path_is_a_lock(path):
+    good = ("requests==2.32.3 --hash=sha256:" + "a" * 64 + "\n").encode()
+    m = manifest(settings=SETTINGS, runtime={"kind": "python-requirements", "lock": path})
+    e = {**_routing_entry(), "runtime": m["runtime"]}
+    files = {"req.lock": good, "orch-addon.json": json.dumps(m).encode()}
+    want = "market.lock_invalid" if path == "orch-addon.json" else "market.lock_missing"  # the manifest is a file
+    with pytest.raises(v.Invalid, match=want):
+        v.check_manifest(e, files["orch-addon.json"], files)
+
+
+@pytest.mark.parametrize("kind,cmd0,ok", [
+    ("python-requirements", "node", False), ("python-requirements", "python3", False),
+    ("python-requirements", "{python}", True), ("node-package-lock", "{python}", False),
+    ("node-package-lock", "node", True), ("node-package-lock", "nodejs", False),
+], ids=lambda x: str(x))
+def test_runtime_kind_fixes_the_entry_interpreter_like_core(kind, cmd0, ok):
+    # mirror of orch-core manifest.py:133-143 (RUNTIME_COMMANDS, _check_runtime)
+    if kind == "python-requirements":
+        lock = ("requests==2.32.3 --hash=sha256:" + "a" * 64 + "\n").encode()
+    else:
+        h = "sha512-" + "A" * 86 + "=="
+        pkg = {"version": "1.0.0", "resolved": "https://registry.npmjs.org/a/-/a-1.0.0.tgz", "integrity": h}
+        lock = json.dumps({"lockfileVersion": 3, "packages": {"": {"dependencies": {"a": "1.0.0"}},
+                                                               "node_modules/a": pkg}}).encode()
+    m = manifest(settings=SETTINGS, capabilities=["choose_model"], runtime={"kind": kind, "lock": "l"},
+                 entry={"cmd": [cmd0, "main"]})  # fmt: skip
+    e = {**_routing_entry(), "runtime": m["runtime"]}
+    raw = json.dumps(m).encode()
+    if ok:
+        v.check_manifest(e, raw, {"l": lock})
+    else:
+        with pytest.raises(v.Invalid, match="market.manifest_invalid"):
+            v.check_manifest(e, raw, {"l": lock})
+
+
+def test_sign_and_ci_requirements_cover_what_the_vendored_parser_imports():
+    # the sign job runs validate_index.py --fetch with only requirements-sign.txt installed: a lazy import the parser
+    # needs (packaging) must be pinned there, with hashes, at the version core locks
+    root = Path(__file__).resolve().parent.parent
+    for name in ("requirements-sign.txt", "requirements-ci.txt"):
+        text = (root / name).read_text()
+        assert "\npackaging==26.3 \\\n    --hash=sha256:" in text, name
+    import re
+
+    src = (root / "scripts" / "vendor" / "orch" / "addons" / "lockfile.py").read_text()
+    third_party = {m.split(".")[0] for m in re.findall(r"^\s+from (packaging[\w.]*) import", src, re.M)}
+    assert third_party == {"packaging"}  # a new third-party import in a re-vendor must be added to the requirements
+
+
+def test_an_environment_fault_crashes_the_gate_instead_of_refusing_the_package(monkeypatch):
+    class Boom:
+        MarketError = type("MarketError", (Exception,), {})
+
+        @staticmethod
+        def check(kind, data):
+            raise ImportError("packaging")
+
+    monkeypatch.setattr(v, "_lockfile_module", lambda: Boom)
+    with pytest.raises(ImportError):
+        v.check_lock({"kind": "python-requirements", "lock": "r"}, {"r": b"x"})
+
+
+@pytest.mark.parametrize("case", [c for c in ALL if c["check"] == "tree"], ids=lambda c: c["name"])
+def test_core_tree_vector(case):
+    listing = [(e["mode"], e["path"], e["size"]) for e in case["args"]["entries"]]
+    if "ok" in case["expect"]:
+        v.judge_listing(listing)
+    else:
+        with pytest.raises(v.Invalid, match=case["expect"]["refuse"]):
+            v.judge_listing(listing)
+
+
+@pytest.mark.parametrize("case", [c for c in ALL if c["check"] == "address"], ids=lambda c: c["name"])
+def test_core_address_vector(case):
+    ip = case["args"]["ip"]
+    if "ok" in case["expect"]:
+        assert v.check_address(ip)
+    else:
+        with pytest.raises(v.Invalid, match=case["expect"]["refuse"]):
+            v.check_address(ip)
 
 
 def test_schema_lists_the_seven_capabilities_sorted_like_core():
