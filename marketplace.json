@@ -2,11 +2,28 @@
   "format": "orch.market/1",
   "name": "orch-marketplace",
   "title": "The official orch add-on marketplace",
-  "version": 2,
+  "version": 3,
   "source": {
     "git": "https://github.com/severinlindenmann/orch-marketplace"
   },
-  "addons": [],
+  "addons": [
+    {
+      "id": "model-routing",
+      "version": "1.0.0",
+      "summary": "Choose which model each coding agent uses for each kind of ticket work",
+      "source": {
+        "git": "https://github.com/severinlindenmann/orch-marketplace",
+        "subdir": "packages/model-routing"
+      },
+      "commit": "91eaf344504df8e0dd7085ae4258c750739ee982",
+      "package_sha256": "sha256:a06abaa0845e1dc8a8825d0dc71454701a2b036041b79ea99fa41f3fa54594a5",
+      "capabilities": [
+        "choose_model"
+      ],
+      "min_orch": "2.0.0.dev0",
+      "api": ">=1.1,<2"
+    }
+  ],
   "expires_at": 1795415884,
   "signature": {
     "key": "BFh8x9dLhMubfTXleS0Bt6Ix-yu9ZiE18B0xRUUNWqsgZdOwt5DZX_Gqs5Ri3p2coFdLk9GhA-Q5WV8Ee0e05l4",
