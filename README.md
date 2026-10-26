@@ -13,7 +13,11 @@ in orch-core; the schema is copied here as `schema/market.v1.json`.
 | **Official marketplace (this repo)** | Add-ons maintained by orch that are not tech-agnostic: Model routing (package `packages/model-routing`), later GitHub, Landing, Jira, Slack, ... | this index |
 | Other marketplaces | Any git repo with a `marketplace.json`, or a single add-on repo | refused until per-add-on OS-user isolation exists (#287) |
 
-The index is empty for now: `packages/model-routing` is in the tree, but its index entry waits for the signing key and workflow (M#3). GitHub and Landing follow (G6, #924).
+The index lists **Model routing** (package `packages/model-routing`), signed with the official key. GitHub and Landing follow (G6, #924).
+
+## orch itself
+
+orch lives in one repository, [orch-core](https://github.com/severinlindenmann/orch-core): core, the dashboard, the built-in add-ons, hub, relay, publish and the phone app under `packages/`, the shared protocol vectors under `contracts/`. Every workspace has this marketplace preset on its Add-ons page (Browse); install, update and remove happen there, one review and one click.
 
 ## Installs are human-only
 
