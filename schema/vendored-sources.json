@@ -17,8 +17,8 @@
   {
    "local": "tests/vectors_market.json",
    "source": "plugins/orch-core/tests/addons/vectors_market.json",
-   "commit": "73e857efc3ad4bc96e218fda33749a287c028e23",
-   "sha256": "1eb233817fd59314586465ed791c8f17a61cd16b403675eee7926223798b7a16"
+   "commit": "8539faead347d2a392fd88908aa3b375b050551e",
+   "sha256": "3ed532d4a800c8ce5bbcc66217cd80811dadf348679673e42c37d7f4b502d2dc"
   },
   {
    "local": "scripts/vendor/orch/addons/lockfile.py",
