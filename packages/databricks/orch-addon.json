@@ -1,0 +1,52 @@
+{
+  "schema": "orch.addon/3",
+  "name": "databricks",
+  "version": "1.0.0",
+  "title": "Databricks",
+  "api": ">=1.2,<2",
+  "min_core": "2.0.0.dev0",
+  "entry": {
+    "cmd": [
+      "{python}",
+      "{pkg}/main.py"
+    ]
+  },
+  "capabilities": [
+    "network",
+    "credential"
+  ],
+  "settings": {
+    "title": "Databricks",
+    "schema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "workspace_url"
+      ],
+      "properties": {
+        "workspace_url": {
+          "type": "string",
+          "title": "Workspace address",
+          "maxLength": 200
+        }
+      }
+    }
+  },
+  "events": [
+    {
+      "kind": "run.finished",
+      "title": "Databricks run finished",
+      "statuses": [
+        "succeeded",
+        "failed",
+        "cancelled"
+      ],
+      "ref": {
+        "format": "int"
+      },
+      "poll": {
+        "interval_s": 300
+      }
+    }
+  ]
+}
