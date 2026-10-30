@@ -161,11 +161,10 @@ def test_settings_schema_and_listing_checks():
     assert v.package_digest(files).startswith("sha256:")
 
 
-def test_vendored_core_schema_accepts_the_manifest_once_it_knows_1_2():
-    try:
-        v.check_manifest_schema(MANIFEST)
-    except v.Invalid as e:
-        pytest.skip(f"vendored core schema predates addon-api 1.2 (needs orch-core #1733): {str(e)[:80]}")
+def test_vendored_core_schema_and_the_1_2_rules_accept_the_manifest():
+    v.check_manifest_schema(MANIFEST)
+    v.check_api_1_1(MANIFEST)
+    v.check_api_1_2(MANIFEST)
 
 
 def test_stdlib_only():

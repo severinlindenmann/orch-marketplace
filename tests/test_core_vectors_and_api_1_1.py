@@ -336,9 +336,9 @@ _DROP = object()
     _bad(entry={"cmd": [""]}),
     _bad(title="Model‮routing"),
     _bad(version="1"),
-    _bad(api=">=1.2,<2"),
+    _bad(api=">=1.3,<2"),  # newer than the add-on API this copy of core speaks (1.2)
     _bad(api=">=2.0"),
-], ids=["unknown_top_key", "missing_title", "extra_entry_key", "empty_cmd0", "bidi_title", "version_1", "api_1_2", "api_2"])
+], ids=["unknown_top_key", "missing_title", "extra_entry_key", "empty_cmd0", "bidi_title", "version_1", "api_1_3", "api_2"])
 def test_manifest_that_core_refuses_is_refused_here_too(m):
     with pytest.raises(v.Invalid):
         v.check_manifest(_routing_entry(), json.dumps(m).encode())

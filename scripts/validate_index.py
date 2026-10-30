@@ -42,7 +42,7 @@ SCHEMA_PATH = Path(__file__).resolve().parent.parent / "schema" / "market.v1.jso
 # core's manifest schema and the shared definitions it references, vendored byte-identical (orch/schema/schemas/)
 MANIFEST_SCHEMA_PATH = SCHEMA_PATH.with_name("addon-manifest.json")
 COMMON_SCHEMA_PATH = SCHEMA_PATH.with_name("common.json")
-ADDON_API = (1, 1)  # the add-on API of the core this copy of the schemas comes from; a package must run on it
+ADDON_API = (1, 2)  # the add-on API of the core this copy of the schemas comes from; a package must run on it
 DEFAULT_GIT_HOSTS = ("github.com", "gitlab.com")
 CASE_INSENSITIVE_HOSTS = ("github.com", "gitlab.com", "bitbucket.org")
 
@@ -554,6 +554,27 @@ def _text_ok(s: str) -> bool:
                for c in s)  # fmt: skip
 
 
+def check_api_1_2(m: dict[str, Any]) -> None:
+    """The add-on API 1.2 rules of a manifest (mirror of core's ``schema._check_manifest_events``): ``events`` needs an
+    api range that excludes 1.0 and 1.1 and the ``network`` capability; kinds are unique and a title is plain text."""
+    events = m.get("events")
+    if events is None:
+        return
+    api = m.get("api", _LEGACY_API)
+    if not isinstance(api, str) or api_range_includes((1, 1), api) is not False:
+        raise Invalid("market.manifest_invalid: events needs add-on API 1.2: set api to a range that excludes 1.1")
+    if "network" not in m.get("capabilities", []):
+        raise Invalid("market.manifest_invalid: events needs the network capability")
+    seen: set[str] = set()
+    for i, ev in enumerate(events if isinstance(events, list) else ()):
+        kind, title = ev.get("kind"), ev.get("title")
+        if kind in seen:
+            raise Invalid(f"market.manifest_invalid: events/{i}/kind: event {kind!r} is declared twice")
+        seen.add(kind)
+        if not isinstance(title, str) or not _text_ok(title) or title != title.strip():
+            raise Invalid(f"market.manifest_invalid: events/{i}/title: a title is plain printable text")
+
+
 def check_settings_schema(node: Any) -> None:
     """Raise :class:`Invalid` unless ``node`` is a schema of the closed subset with an object at the root."""
     if not isinstance(node, dict) or node.get("type") != "object":
@@ -655,7 +676,7 @@ def check_manifest_schema(m: dict[str, Any]) -> None:
     if _suspicious(m["title"]):
         raise Invalid("market.manifest_invalid: title contains an invisible character")
     if api_range_includes(ADDON_API, m.get("api", _LEGACY_API)) is not True:
-        raise Invalid(f"market.manifest_invalid: api {m.get('api')!r} does not include add-on API 1.1")
+        raise Invalid(f"market.manifest_invalid: api {m.get('api')!r} does not include add-on API 1.2")
 
 
 def check_api_1_1(m: dict[str, Any]) -> None:
@@ -741,6 +762,7 @@ def check_manifest(entry: dict[str, Any], manifest_bytes: bytes, files: dict[str
         raise Invalid("market.manifest_mismatch: manifest runtime differs from the entry")
     check_manifest_schema(m)
     check_api_1_1(m)
+    check_api_1_2(m)
     if "runtime" in m:  # the schema has made it {kind, lock}
         check_runtime_command(m)
         check_lock(m["runtime"], files or {})

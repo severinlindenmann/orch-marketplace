@@ -580,6 +580,72 @@
         "lock"
       ],
       "additionalProperties": false
+    },
+    "events": {
+      "type": "array",
+      "maxItems": 8,
+      "description": "addon-api 1.2: the wake events this add-on can report to a waiting follow-up; polled by the host with the method events.poll; checked further in validate()",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind",
+          "title",
+          "statuses",
+          "ref",
+          "poll"
+        ],
+        "properties": {
+          "kind": {
+            "$ref": "https://schemas.orch.dev/v2/common#/$defs/addonEventKind"
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 40
+          },
+          "statuses": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 4,
+            "uniqueItems": true,
+            "items": {
+              "$ref": "https://schemas.orch.dev/v2/common#/$defs/addonEventStatus"
+            }
+          },
+          "ref": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "format"
+            ],
+            "properties": {
+              "format": {
+                "enum": [
+                  "int",
+                  "slug",
+                  "owner_repo_number",
+                  "hex40"
+                ]
+              }
+            }
+          },
+          "poll": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "interval_s"
+            ],
+            "properties": {
+              "interval_s": {
+                "type": "integer",
+                "minimum": 60,
+                "maximum": 3600
+              }
+            }
+          }
+        }
+      }
     }
   },
   "additionalProperties": false,

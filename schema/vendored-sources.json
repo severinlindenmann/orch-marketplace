@@ -4,26 +4,26 @@
  "files": [
   {
    "local": "schema/addon-manifest.json",
-   "source": "plugins/orch-core/src/orch/schema/schemas/addon-manifest.json",
-   "commit": "73e857efc3ad4bc96e218fda33749a287c028e23",
-   "sha256": "719e6392579b922c618b417ccaf25c62bd3c91a8c79937c5c6d3171af18eca9f"
+   "source": "packages/core/src/orch/schema/schemas/addon-manifest.json",
+   "commit": "061f882eaa8140021b54424ee31480816a9fa67f",
+   "sha256": "77dacfacfcfe8aeb9e3963b185ea9cb5ec7716349dca8eb0bd59d74646690325"
   },
   {
    "local": "schema/common.json",
-   "source": "plugins/orch-core/src/orch/schema/schemas/common.json",
-   "commit": "6c1d88a48bde197364a8c641d2247cf1b2479d14",
-   "sha256": "82dd6776a53dc222dcebcbb571c8127263115661c343f4307d1856c9be4a9b85"
+   "source": "packages/core/src/orch/schema/schemas/common.json",
+   "commit": "061f882eaa8140021b54424ee31480816a9fa67f",
+   "sha256": "a72ccb951f7d562036d66703f3a50b3cd493cbbe6ae819721269ec67793f43ed"
   },
   {
    "local": "tests/vectors_market.json",
-   "source": "plugins/orch-core/tests/addons/vectors_market.json",
-   "commit": "73e857efc3ad4bc96e218fda33749a287c028e23",
+   "source": "packages/core/tests/addons/vectors_market.json",
+   "commit": "061f882eaa8140021b54424ee31480816a9fa67f",
    "sha256": "1eb233817fd59314586465ed791c8f17a61cd16b403675eee7926223798b7a16"
   },
   {
    "local": "scripts/vendor/orch/addons/lockfile.py",
-   "source": "plugins/orch-core/src/orch/addons/lockfile.py",
-   "commit": "73e857efc3ad4bc96e218fda33749a287c028e23",
+   "source": "packages/core/src/orch/addons/lockfile.py",
+   "commit": "061f882eaa8140021b54424ee31480816a9fa67f",
    "sha256": "95a149e5a03b6c54b4f09253b7c4e1b66084d04776015ed32066004285005674"
   },
   {
