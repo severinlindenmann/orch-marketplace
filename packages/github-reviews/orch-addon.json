@@ -1,0 +1,34 @@
+{
+  "schema": "orch.addon/3",
+  "name": "github-reviews",
+  "version": "1.0.0",
+  "title": "GitHub checks",
+  "api": ">=1.2,<2",
+  "min_core": "2.0.0.dev0",
+  "entry": {
+    "cmd": [
+      "{python}",
+      "{pkg}/main.py"
+    ]
+  },
+  "capabilities": [
+    "network",
+    "credential"
+  ],
+  "events": [
+    {
+      "kind": "checks.finished",
+      "title": "Pull request checks finished",
+      "statuses": [
+        "passed",
+        "failed"
+      ],
+      "ref": {
+        "format": "owner_repo_number"
+      },
+      "poll": {
+        "interval_s": 300
+      }
+    }
+  ]
+}
