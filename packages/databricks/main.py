@@ -27,9 +27,10 @@ LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?")
 REF = re.compile(r"[0-9]{1,19}")
 TERMINAL = ("TERMINATED", "SKIPPED", "INTERNAL_ERROR")
 MAX_BODY = 1 << 20
+CHUNK = 64 << 10
 BUDGET_S = 8.0
 
-# fixed codes and messages (the add-on API 1.2 failure vocabulary: login / unreachable / bad answer)
+# fixed codes and messages: this add-on's own choice (login / unreachable / bad answer); the host counts any error as a failed poll
 E_JSON, E_METHOD, E_PARAMS, E_LOGIN, E_NET, E_BAD = -32700, -32601, -32602, -32001, -32002, -32003
 MESSAGES = {
     E_JSON: "not JSON",
@@ -55,7 +56,26 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 def real_opener() -> Callable[..., Any]:
-    return urllib.request.build_opener(_NoRedirect, urllib.request.HTTPSHandler).open
+    return urllib.request.build_opener(
+        urllib.request.ProxyHandler({}),  # no system or environment proxy: the key goes only to the API host
+        _NoRedirect,
+        urllib.request.HTTPSHandler,
+    ).open
+
+
+def read_capped(resp: Any, deadline: float, now: Callable[[], float]) -> bytes:
+    """The body in 64 KiB chunks: more than MAX_BODY is refused and the total deadline is checked between chunks."""
+    parts: list[bytes] = []
+    size = 0
+    while size <= MAX_BODY:
+        if now() > deadline:
+            raise Fail(E_NET)
+        chunk = resp.read(min(CHUNK, MAX_BODY + 1 - size))
+        if not chunk:
+            break
+        parts.append(chunk)
+        size += len(chunk)
+    return b"".join(parts)
 
 
 def workspace_host(value: Any) -> str:
@@ -119,7 +139,7 @@ def poll(params: Any, opener: Callable[..., Any] | None = None, now: Callable[[]
         resp = (opener or real_opener())(req, timeout=max(0.5, deadline - now()))
         try:
             status = getattr(resp, "status", 200)
-            body = resp.read(MAX_BODY + 1)
+            body = read_capped(resp, deadline, now)
         finally:
             close = getattr(resp, "close", None)
             if close:

@@ -29,6 +29,47 @@ SENTINEL = "dapi-SENTINEL-0123456789abcdef"
 WS = "https://adb-123.4.azuredatabricks.net"
 
 
+@pytest.fixture(autouse=True)
+def key_never_printed(capfd):
+    """Every test of the state and error matrix: the key never reaches stdout or stderr of this process."""
+    yield
+    out, err = capfd.readouterr()
+    assert SENTINEL not in out and SENTINEL not in err
+
+
+class Drip:
+    """A response that hands out one byte per read and moves a fake clock: a slow-dripping server."""
+
+    status = 200
+
+    def __init__(self, clock):
+        self.clock = clock
+
+    def read(self, n=-1):
+        self.clock[0] += 3.0
+        return b"x"
+
+    def close(self):
+        pass
+
+
+def test_a_slow_dripping_body_ends_in_a_failed_poll_before_the_runner_limit():
+    clock = [100.0]
+    op = lambda req, timeout=None: Drip(clock)  # noqa: E731
+    with pytest.raises(m.Fail) as e:
+        m.poll(params(), op, now=lambda: clock[0])
+    assert e.value.code == m.E_NET and clock[0] - 100.0 < 10
+
+
+def test_the_real_opener_has_an_empty_proxy_handler_and_ignores_system_proxies(monkeypatch):
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:9")
+    monkeypatch.setattr(urllib.request, "getproxies", lambda: {"https": "http://127.0.0.1:9"})
+    handlers = m.real_opener().__self__.handlers
+    # an empty ProxyHandler replaces the default one, which would read the environment / macOS proxies, and registers nothing
+    assert not [h for h in handlers if isinstance(h, urllib.request.ProxyHandler)]
+    assert urllib.request.ProxyHandler().proxies != {}  # the default would have used the proxy set above
+
+
 def params(**kw):
     p = {"kind": "run.finished", "ref": "8812", "settings": {"workspace_url": WS}, "credential": SENTINEL}
     p.update(kw)
@@ -90,7 +131,7 @@ def test_manifest_and_package_shape():
         "kind": "run.finished", "title": "Databricks run finished", "statuses": ["succeeded", "failed", "cancelled"],
         "ref": {"format": "int"}, "poll": {"interval_s": 300},
     }]  # fmt: skip
-    assert sorted(p.name for p in PKG.iterdir()) == ["main.py", "orch-addon.json"]
+    assert sorted(p.name for p in PKG.iterdir()) == ["README.md", "main.py", "orch-addon.json"]
 
 
 def check_events(events):
@@ -261,7 +302,7 @@ def test_the_real_opener_refuses_redirects():
 
 def test_a_deadline_shorter_than_the_budget_is_passed_on():
     op = Opener(run_state("RUNNING"))
-    clock = iter([100.0, 107.9])
+    clock = iter([100.0, 107.9] + [107.9] * 20)
     m.poll(params(), op, now=lambda: next(clock))
     assert op.calls[0][1] == 0.5  # floor for an almost used up budget; the 8 s total is the runner's 10 s minus slack
 
