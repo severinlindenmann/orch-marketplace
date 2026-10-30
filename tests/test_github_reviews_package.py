@@ -36,6 +36,47 @@ def runs_page(n):
     return RUNS[:-1] + str(n)
 
 
+@pytest.fixture(autouse=True)
+def key_never_printed(capfd):
+    """Every test of the state and error matrix: the key never reaches stdout or stderr of this process."""
+    yield
+    out, err = capfd.readouterr()
+    assert SENTINEL not in out and SENTINEL not in err
+
+
+class Drip:
+    """A response that hands out one byte per read and moves a fake clock: a slow-dripping server."""
+
+    status = 200
+
+    def __init__(self, clock):
+        self.clock = clock
+
+    def read(self, n=-1):
+        self.clock[0] += 3.0
+        return b"x"
+
+    def close(self):
+        pass
+
+
+def test_a_slow_dripping_body_ends_in_a_failed_poll_before_the_runner_limit():
+    clock = [100.0]
+    op = lambda req, timeout=None: Drip(clock)  # noqa: E731
+    with pytest.raises(m.Fail) as e:
+        m.poll(params(), op, now=lambda: clock[0])
+    assert e.value.code == m.E_NET and clock[0] - 100.0 < 10
+
+
+def test_the_real_opener_has_an_empty_proxy_handler_and_ignores_system_proxies(monkeypatch):
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:9")
+    monkeypatch.setattr(urllib.request, "getproxies", lambda: {"https": "http://127.0.0.1:9"})
+    handlers = m.real_opener().__self__.handlers
+    # an empty ProxyHandler replaces the default one, which would read the environment / macOS proxies, and registers nothing
+    assert not [h for h in handlers if isinstance(h, urllib.request.ProxyHandler)]
+    assert urllib.request.ProxyHandler().proxies != {}  # the default would have used the proxy set above
+
+
 def params(**kw):
     p = {"kind": "checks.finished", "ref": "acme:api:412", "settings": None, "credential": SENTINEL}
     p.update(kw)
@@ -102,7 +143,7 @@ def test_manifest_and_package_shape():
         "kind": "checks.finished", "title": "Pull request checks finished", "statuses": ["passed", "failed"],
         "ref": {"format": "owner_repo_number"}, "poll": {"interval_s": 300},
     }]  # fmt: skip
-    assert sorted(p.name for p in PKG.iterdir()) == ["main.py", "orch-addon.json"]
+    assert sorted(p.name for p in PKG.iterdir()) == ["README.md", "main.py", "orch-addon.json"]
 
 
 def test_events_follow_addon_api_1_2_and_need_network():
@@ -167,13 +208,18 @@ def test_requests_are_https_gets_to_the_api_host_with_a_bearer_token():
         assert req.get_header("Authorization") == "Bearer " + SENTINEL and 0 < timeout <= 8
 
 
-def test_pagination_reads_up_to_three_pages_and_stays_pending_when_truncated():
+def test_pagination_reads_up_to_three_pages():
     full = [("completed", "success")] * 100
     routes = {PR: pr()}
     for n in (1, 2, 3):
-        routes[runs_page(n)] = checks(*full, total=450)
+        routes[runs_page(n)] = checks(*full, total=300)
     op = Opener(routes)
-    assert m.poll(params(), op) == {"state": "pending"} and len(op.calls) == 4  # PR + 3 pages, never a 4th
+    assert m.poll(params(), op) == {"state": "done", "status": "passed"} and len(op.calls) == 4  # PR + 3 pages, never a 4th
+
+
+def test_more_checks_than_the_pages_we_read_is_a_failed_event():
+    routes = {PR: pr(), RUNS: checks(("completed", "success"), total=301)}
+    assert result_of(routes) == {"state": "failed"}
 
 
 def test_pagination_joins_pages():
@@ -265,15 +311,16 @@ def test_a_non_200_success_status_is_refused():
     assert out["error"]["code"] == m.E_NET
 
 
-def test_the_real_opener_refuses_redirects_and_only_https_handlers_are_used():
+def test_the_real_opener_refuses_redirects():
     h = m._NoRedirect()
     assert h.redirect_request(urllib.request.Request("https://api.github.com/x"), None, 302, "Found", {}, "https://evil.example/") is None
     handlers = [type(x) for x in m.real_opener().__self__.handlers]
     assert m._NoRedirect in handlers and urllib.request.HTTPRedirectHandler not in handlers
+    assert urllib.request.HTTPSHandler in handlers and urllib.request.ProxyHandler not in handlers
 
 
 def test_the_total_time_budget_is_shared_by_all_requests():
-    ticks = iter([100.0, 100.5, 108.5])  # start, first request, second request already past the 8 s budget
+    ticks = iter([100.0, 100.5, 100.5, 100.5, 108.5, 108.5, 108.5])  # the second request starts past the 8 s budget
     op = Opener({PR: pr(), RUNS: checks(("completed", "success"))})
     with pytest.raises(m.Fail) as e:
         m.poll(params(), op, now=lambda: next(ticks))

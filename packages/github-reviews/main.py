@@ -31,6 +31,7 @@ PASSING = ("success", "neutral", "skipped")
 PAGE = 100
 MAX_PAGES = 3
 MAX_BODY = 1 << 20
+CHUNK = 64 << 10
 BUDGET_S = 8.0
 
 E_JSON, E_METHOD, E_PARAMS, E_LOGIN, E_NET, E_BAD = -32700, -32601, -32602, -32001, -32002, -32003
@@ -62,7 +63,26 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 def real_opener() -> Callable[..., Any]:
-    return urllib.request.build_opener(_NoRedirect, urllib.request.HTTPSHandler).open
+    return urllib.request.build_opener(
+        urllib.request.ProxyHandler({}),  # no system or environment proxy: the key goes only to the API host
+        _NoRedirect,
+        urllib.request.HTTPSHandler,
+    ).open
+
+
+def read_capped(resp: Any, deadline: float, now: Callable[[], float]) -> bytes:
+    """The body in 64 KiB chunks: more than MAX_BODY is refused and the total deadline is checked between chunks."""
+    parts: list[bytes] = []
+    size = 0
+    while size <= MAX_BODY:
+        if now() > deadline:
+            raise Fail(E_NET)
+        chunk = resp.read(min(CHUNK, MAX_BODY + 1 - size))
+        if not chunk:
+            break
+        parts.append(chunk)
+        size += len(chunk)
+    return b"".join(parts)
 
 
 def _pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -131,7 +151,7 @@ class Client:
             resp = (self._opener or real_opener())(req, timeout=max(0.5, left))
             try:
                 status = getattr(resp, "status", 200)
-                body = resp.read(MAX_BODY + 1)
+                body = read_capped(resp, self._deadline, self._now)
             finally:
                 close = getattr(resp, "close", None)
                 if close:
@@ -168,6 +188,8 @@ def judge(runs: list[Any], total: Any) -> dict[str, str]:
     """pending unless there is at least one check run, all are complete and we saw all of them."""
     if not isinstance(total, int) or isinstance(total, bool) or total < 0:
         raise Fail(E_BAD)
+    if total > MAX_PAGES * PAGE:  # more checks than we ever read: do not wait for something we cannot judge
+        return {"state": "failed"}
     if not runs:
         return {"state": "pending"}
     verdict = "passed"
