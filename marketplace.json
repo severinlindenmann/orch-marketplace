@@ -2,11 +2,45 @@
   "format": "orch.market/1",
   "name": "orch-marketplace",
   "title": "The official orch add-on marketplace",
-  "version": 4,
+  "version": 5,
   "source": {
     "git": "https://github.com/severinlindenmann/orch-marketplace"
   },
   "addons": [
+    {
+      "id": "databricks",
+      "version": "1.0.0",
+      "summary": "Wake a waiting follow-up when a Databricks job run finishes",
+      "source": {
+        "git": "https://github.com/severinlindenmann/orch-marketplace",
+        "subdir": "packages/databricks"
+      },
+      "commit": "c37ecfd7a84da5e07b43f5c0730334cb833f6b9a",
+      "package_sha256": "sha256:d65556f4c843bbf6579679b38e11a291ed123a4d3c574b20a3a2e80945b03ea9",
+      "capabilities": [
+        "credential",
+        "network"
+      ],
+      "min_orch": "2.0.0.dev0",
+      "api": ">=1.2,<2"
+    },
+    {
+      "id": "github-reviews",
+      "version": "1.0.0",
+      "summary": "Wake a waiting follow-up when a pull request's checks finish",
+      "source": {
+        "git": "https://github.com/severinlindenmann/orch-marketplace",
+        "subdir": "packages/github-reviews"
+      },
+      "commit": "c37ecfd7a84da5e07b43f5c0730334cb833f6b9a",
+      "package_sha256": "sha256:b40be4f15b39596e278be2be7404678fcd28ae255ba59ac97f55171e4b8ccdde",
+      "capabilities": [
+        "credential",
+        "network"
+      ],
+      "min_orch": "2.0.0.dev0",
+      "api": ">=1.2,<2"
+    },
     {
       "id": "model-routing",
       "version": "1.0.0",
