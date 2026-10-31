@@ -2,7 +2,7 @@
   "format": "orch.market/1",
   "name": "orch-marketplace",
   "title": "The official orch add-on marketplace",
-  "version": 5,
+  "version": 6,
   "source": {
     "git": "https://github.com/severinlindenmann/orch-marketplace"
   },
@@ -22,7 +22,11 @@
         "network"
       ],
       "min_orch": "2.0.0.dev0",
-      "api": ">=1.2,<2"
+      "api": ">=1.2,<2",
+      "publisher": {
+        "key": "BFh8x9dLhMubfTXleS0Bt6Ix-yu9ZiE18B0xRUUNWqsgZdOwt5DZX_Gqs5Ri3p2coFdLk9GhA-Q5WV8Ee0e05l4",
+        "sig": "dCHpJOB4kGWb9yG-QkhcTAqtJ2_KzwbO0BaP_A5tQJrYkeO5_-CRwX0yYUcUhb8sihlL3Cls-wkbr4FQ3wmwww"
+      }
     },
     {
       "id": "github-reviews",
@@ -39,7 +43,11 @@
         "network"
       ],
       "min_orch": "2.0.0.dev0",
-      "api": ">=1.2,<2"
+      "api": ">=1.2,<2",
+      "publisher": {
+        "key": "BFh8x9dLhMubfTXleS0Bt6Ix-yu9ZiE18B0xRUUNWqsgZdOwt5DZX_Gqs5Ri3p2coFdLk9GhA-Q5WV8Ee0e05l4",
+        "sig": "vGlPPzVcxBsuvQIY2DJU9IX__OKd1zPzECoOsyn03HRBYXG2l15lPKHM8hdl8Si_9JV9SweYxBirkjuHnjNIFw"
+      }
     },
     {
       "id": "model-routing",
@@ -62,9 +70,9 @@
       }
     }
   ],
-  "expires_at": 1795501808,
+  "expires_at": 1796017751,
   "signature": {
     "key": "BFh8x9dLhMubfTXleS0Bt6Ix-yu9ZiE18B0xRUUNWqsgZdOwt5DZX_Gqs5Ri3p2coFdLk9GhA-Q5WV8Ee0e05l4",
-    "sig": "bRn0xWfhIw6MBXgh6H13XthR7Ftt2zNsrCTtlP9O_LVrMy-5a8rJNxaEU-hdu6-NgutED3RkvLNkm0audc-c-Q"
+    "sig": "4vllbQPvcMHdk9ERy9SBpbW1YEc8u-CoKLFEiMzw0XbWEakUyCLYtm0NheC5Ba4GYTsBFW5ywzyhDCWHZe2lIQ"
   }
 }
