@@ -58,6 +58,8 @@
           "people",
           "policy",
           "claim",
+          "followup",
+          "schedule",
           "task",
           "handoff",
           "log",
@@ -78,7 +80,8 @@
           "addon",
           "invalid",
           "hub",
-          "relay"
+          "relay",
+          "remote"
         ]
       }
     },
@@ -90,6 +93,8 @@
         "people",
         "policy",
         "claim",
+        "followup",
+        "schedule",
         "task",
         "handoff",
         "log",
@@ -110,7 +115,8 @@
         "addon",
         "invalid",
         "hub",
-        "relay"
+        "relay",
+        "remote"
       ]
     },
     "personId": {
@@ -255,7 +261,8 @@
         "wont_do",
         "duplicate",
         "obsolete",
-        "other"
+        "other",
+        "nothing_to_do"
       ]
     },
     "claimReleaseReason": {
@@ -1023,7 +1030,7 @@
       "type": "string",
       "maxLength": 300,
       "description": "an origin the Publish add-on may send files to: https with a lower-case host and optional port, or http for this computer only (the signer re-checks it)",
-      "pattern": "^(?:https://[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?::[1-9][0-9]{0,4})?|http://(?:localhost|127\\.0\\.0\\.1)(?::[1-9][0-9]{0,4})?)(?![\\s\\S])"
+      "pattern": "^(?:https://[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?::[1-9][0-9]{0,4})?|http://(?:localhost|127\\.0\\.0\\.1|10\\.(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\.(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\.(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])|172\\.(?:1[6-9]|2[0-9]|3[01])\\.(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\.(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])|192\\.168\\.(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\.(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])|100\\.(?:6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\\.(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\.(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9]))(?::[1-9][0-9]{0,4})?)(?![\\s\\S])"
     },
     "hubUserId": {
       "type": "string",
@@ -1093,6 +1100,64 @@
         "o",
         "sig"
       ]
+    },
+    "followupId": {
+      "type": "string",
+      "pattern": "^(?:fu_[0-7][0-9A-HJKMNP-TV-Z]{25})(?![\\s\\S])"
+    },
+    "runId": {
+      "type": "string",
+      "pattern": "^(?:r_[0-7][0-9A-HJKMNP-TV-Z]{25})(?![\\s\\S])"
+    },
+    "hex64": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}(?![\\s\\S])"
+    },
+    "remoteDeviceId": {
+      "type": "string",
+      "pattern": "^(?:rd_[0-9a-f]{32})(?![\\s\\S])",
+      "description": "Remote access R2: a remote device id, rd_ plus 32 lowercase hex (the hub's d_ devices can never name one)"
+    },
+    "remoteCodeId": {
+      "type": "string",
+      "pattern": "^(?:rc_[0-9a-f]{32})(?![\\s\\S])",
+      "description": "Remote access R2: an enrollment code id, rc_ plus 32 lowercase hex"
+    },
+    "b64u32": {
+      "type": "string",
+      "pattern": "^(?:[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048])(?![\\s\\S])",
+      "description": "canonical unpadded base64url of exactly 32 bytes"
+    },
+    "eventRef": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9._:-]*(?![\\s\\S])"
+    },
+    "handoffId": {
+      "type": "string",
+      "pattern": "^hr_[0-7][0-9A-HJKMNP-TV-Z]{25}(?![\\s\\S])",
+      "description": "The id of a host's prepared hand-off request (FB15, hub protocol 8.8b)."
+    },
+    "scheduleId": {
+      "type": "string",
+      "pattern": "^(?:sc_[0-7][0-9A-HJKMNP-TV-Z]{25})(?![\\s\\S])"
+    },
+    "timeOfDay": {
+      "type": "string",
+      "description": "HH:MM, 24-hour wall-clock time",
+      "pattern": "^(?:[01][0-9]|2[0-3]):[0-5][0-9](?![\\s\\S])"
+    },
+    "addonEventKind": {
+      "type": "string",
+      "pattern": "^(?:[a-z][a-z0-9_]{0,31}(?:\\.[a-z][a-z0-9_]{0,31}){1,2})(?![\\s\\S])"
+    },
+    "addonEventStatus": {
+      "type": "string",
+      "pattern": "^(?:[a-z][a-z0-9_]{0,31})(?![\\s\\S])"
+    },
+    "addonFollowupKind": {
+      "type": "string",
+      "pattern": "^(?:[a-z][a-z0-9-]{0,39}\\.[a-z][a-z0-9_]{0,31}(?:\\.[a-z][a-z0-9_]{0,31}){1,2})(?![\\s\\S])"
     }
   }
 }
