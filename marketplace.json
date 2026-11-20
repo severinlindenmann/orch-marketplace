@@ -2,7 +2,7 @@
   "format": "orch.market/1",
   "name": "orch-marketplace",
   "title": "The official orch add-on marketplace",
-  "version": 6,
+  "version": 7,
   "source": {
     "git": "https://github.com/severinlindenmann/orch-marketplace"
   },
@@ -70,9 +70,9 @@
       }
     }
   ],
-  "expires_at": 1796017751,
+  "expires_at": 1797775193,
   "signature": {
     "key": "BFh8x9dLhMubfTXleS0Bt6Ix-yu9ZiE18B0xRUUNWqsgZdOwt5DZX_Gqs5Ri3p2coFdLk9GhA-Q5WV8Ee0e05l4",
-    "sig": "4vllbQPvcMHdk9ERy9SBpbW1YEc8u-CoKLFEiMzw0XbWEakUyCLYtm0NheC5Ba4GYTsBFW5ywzyhDCWHZe2lIQ"
+    "sig": "JwiVBJY_xyZoq1cJazyiKA1pVzJ7Dovpovu4YOIjKKa70QaE5RnOntVSA79LmVid_jU7LxKOEdr4E-qGj69pGQ"
   }
 }
